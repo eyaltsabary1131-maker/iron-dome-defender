@@ -1,13 +1,15 @@
 import * as Phaser from "phaser";
+import { GAME_HEIGHT, GAME_WIDTH } from "@/game/config/dimensions";
 import { MainScene } from "@/game/scenes/MainScene";
+import { PreloadScene } from "@/game/scenes/PreloadScene";
 
 export function createGameConfig(
   _Phaser: typeof Phaser,
 ): Phaser.Types.Core.GameConfig {
   return {
     type: _Phaser.AUTO,
-    width: 800,
-    height: 600,
+    width: GAME_WIDTH,
+    height: GAME_HEIGHT,
     backgroundColor: "#0b1020",
     physics: {
       default: "arcade",
@@ -16,6 +18,6 @@ export function createGameConfig(
         debug: false,
       },
     },
-    scene: [MainScene],
+    scene: [PreloadScene, MainScene],
   };
 }

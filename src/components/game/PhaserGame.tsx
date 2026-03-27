@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import type * as PhaserNS from "phaser";
 import { createGameConfig } from "@/game/config/gameConfig";
+import { GAME_HEIGHT, GAME_WIDTH } from "@/game/config/dimensions";
 import { GameHUD } from "@/components/game/GameHUD";
 
 export default function PhaserGame() {
@@ -36,8 +37,8 @@ export default function PhaserGame() {
     <div
       style={{
         position: "relative",
-        width: 800,
-        height: 600,
+        width: GAME_WIDTH,
+        height: GAME_HEIGHT,
         borderRadius: 8,
         overflow: "hidden",
         boxShadow: "0 8px 32px rgba(0, 0, 0, 0.45)",

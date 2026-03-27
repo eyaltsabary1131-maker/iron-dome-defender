@@ -1,5 +1,17 @@
 let audioContext: AudioContext | null = null;
 let initPromise: Promise<void> | null = null;
+let audioMuted = false;
+
+export function setAudioMuted(muted: boolean): void {
+  audioMuted = muted;
+  if (muted) {
+    stopTacticalDrone();
+  }
+}
+
+export function isAudioMuted(): boolean {
+  return audioMuted;
+}
 
 export function getAudioContext(): AudioContext | null {
   return audioContext;
@@ -30,8 +42,30 @@ function isRunning(): boolean {
   return audioContext !== null && audioContext.state === "running";
 }
 
+function canOutputSound(): boolean {
+  return !audioMuted && isRunning();
+}
+
+/** Dry fire / empty magazine — short mechanical click */
+export function playDryFireClick(): void {
+  if (!canOutputSound() || !audioContext) return;
+  const c = audioContext;
+  const t = c.currentTime;
+  const osc = c.createOscillator();
+  const g = c.createGain();
+  osc.type = "square";
+  osc.frequency.setValueAtTime(420, t);
+  osc.frequency.exponentialRampToValueAtTime(120, t + 0.02);
+  g.gain.setValueAtTime(0.06, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.035);
+  osc.connect(g);
+  g.connect(c.destination);
+  osc.start(t);
+  osc.stop(t + 0.04);
+}
+
 export function playShoot(): void {
-  if (!isRunning() || !audioContext) return;
+  if (!canOutputSound() || !audioContext) return;
   const c = audioContext;
   const t = c.currentTime;
   const osc = c.createOscillator();
@@ -48,7 +82,7 @@ export function playShoot(): void {
 }
 
 export function playExplosion(): void {
-  if (!isRunning() || !audioContext) return;
+  if (!canOutputSound() || !audioContext) return;
   const c = audioContext;
   const dur = 0.38;
   const bufferSize = Math.floor(c.sampleRate * dur);
@@ -75,7 +109,7 @@ export function playExplosion(): void {
 }
 
 export function playPowerUp(): void {
-  if (!isRunning() || !audioContext) return;
+  if (!canOutputSound() || !audioContext) return;
   const c = audioContext;
   const freqs = [523.25, 659.25, 783.99, 1046.5];
   const t0 = c.currentTime;
@@ -95,8 +129,76 @@ export function playPowerUp(): void {
   });
 }
 
+/** Iron Beam — sharp electronic zap */
+export function playLaserZap(): void {
+  if (!canOutputSound() || !audioContext) return;
+  const c = audioContext;
+  const t0 = c.currentTime;
+  const dur = 0.11;
+  const noiseSize = Math.floor(c.sampleRate * dur);
+  const buf = c.createBuffer(1, noiseSize, c.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < noiseSize; i++) {
+    const gate = 1 - i / noiseSize;
+    data[i] = (Math.random() * 2 - 1) * gate * gate * 0.55;
+  }
+  const src = c.createBufferSource();
+  src.buffer = buf;
+  const hp = c.createBiquadFilter();
+  hp.type = "highpass";
+  hp.frequency.setValueAtTime(1200, t0);
+  const bp = c.createBiquadFilter();
+  bp.type = "bandpass";
+  bp.frequency.setValueAtTime(2800, t0);
+  bp.Q.setValueAtTime(2.2, t0);
+  const g = c.createGain();
+  g.gain.setValueAtTime(0.2, t0);
+  g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+  src.connect(hp);
+  hp.connect(bp);
+  bp.connect(g);
+  g.connect(c.destination);
+  src.start(t0);
+  src.stop(t0 + dur);
+
+  const z = c.createOscillator();
+  const zg = c.createGain();
+  z.type = "square";
+  z.frequency.setValueAtTime(2200, t0);
+  z.frequency.exponentialRampToValueAtTime(8800, t0 + 0.045);
+  zg.gain.setValueAtTime(0, t0);
+  zg.gain.linearRampToValueAtTime(0.09, t0 + 0.006);
+  zg.gain.exponentialRampToValueAtTime(0.001, t0 + 0.09);
+  z.connect(zg);
+  zg.connect(c.destination);
+  z.start(t0);
+  z.stop(t0 + 0.095);
+}
+
+/** Same-color crate — short ascending reward jingle */
+export function playPowerUpLevelUp(): void {
+  if (!canOutputSound() || !audioContext) return;
+  const c = audioContext;
+  const freqs = [392, 523.25, 659.25, 783.99, 987.77];
+  const t0 = c.currentTime;
+  freqs.forEach((freq, i) => {
+    const start = t0 + i * 0.048;
+    const osc = c.createOscillator();
+    const g = c.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, start);
+    g.gain.setValueAtTime(0, start);
+    g.gain.linearRampToValueAtTime(0.12, start + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, start + 0.14);
+    osc.connect(g);
+    g.connect(c.destination);
+    osc.start(start);
+    osc.stop(start + 0.15);
+  });
+}
+
 export function playBossWarning(): void {
-  if (!isRunning() || !audioContext) return;
+  if (!canOutputSound() || !audioContext) return;
   const c = audioContext;
   const steps = 14;
   for (let i = 0; i < steps; i++) {
@@ -118,7 +220,7 @@ export function playBossWarning(): void {
 }
 
 export function playJokerNuke(): void {
-  if (!isRunning() || !audioContext) return;
+  if (!canOutputSound() || !audioContext) return;
   const c = audioContext;
   const dur = 1.1;
   const bufferSize = Math.floor(c.sampleRate * dur);
@@ -161,7 +263,7 @@ export function playJokerNuke(): void {
 }
 
 export function playWaveAlert(): void {
-  if (!isRunning() || !audioContext) return;
+  if (!canOutputSound() || !audioContext) return;
   const c = audioContext;
   const steps = 6;
   for (let i = 0; i < steps; i++) {
@@ -179,4 +281,217 @@ export function playWaveAlert(): void {
     osc.start(start);
     osc.stop(start + 0.11);
   }
+}
+
+/** Red Alert swarm — urgent dual-tone siren */
+export function playRedAlertSiren(): void {
+  if (!canOutputSound() || !audioContext) return;
+  const c = audioContext;
+  const cycles = 10;
+  for (let i = 0; i < cycles; i++) {
+    const start = c.currentTime + i * 0.18;
+    for (const freq of [580, 920] as const) {
+      const osc = c.createOscillator();
+      const g = c.createGain();
+      osc.type = "square";
+      osc.frequency.setValueAtTime(freq, start);
+      g.gain.setValueAtTime(0, start);
+      g.gain.linearRampToValueAtTime(0.11, start + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, start + 0.14);
+      osc.connect(g);
+      g.connect(c.destination);
+      osc.start(start);
+      osc.stop(start + 0.15);
+    }
+  }
+}
+
+/** Fighter pass + whoosh */
+export function playJetFlyby(): void {
+  if (!canOutputSound() || !audioContext) return;
+  const c = audioContext;
+  const dur = 1.35;
+  const bufferSize = Math.floor(c.sampleRate * dur);
+  const buffer = c.createBuffer(1, bufferSize, c.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) {
+    const t = i / bufferSize;
+    const sweep = Math.sin(t * Math.PI);
+    const center = 0.35 + t * 0.55;
+    const noise = (Math.random() * 2 - 1) * sweep;
+    data[i] = noise * (0.35 + sweep * 0.45);
+  }
+  const src = c.createBufferSource();
+  src.buffer = buffer;
+  const bp = c.createBiquadFilter();
+  bp.type = "bandpass";
+  bp.Q.value = 0.65;
+  const t0 = c.currentTime;
+  bp.frequency.setValueAtTime(280, t0);
+  bp.frequency.exponentialRampToValueAtTime(2400, t0 + dur * 0.55);
+  bp.frequency.exponentialRampToValueAtTime(400, t0 + dur);
+  const g = c.createGain();
+  g.gain.setValueAtTime(0, t0);
+  g.gain.linearRampToValueAtTime(0.22, t0 + 0.08);
+  g.gain.linearRampToValueAtTime(0.28, t0 + dur * 0.45);
+  g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+  src.connect(bp);
+  bp.connect(g);
+  g.connect(c.destination);
+  src.start(t0);
+  src.stop(t0 + dur);
+}
+
+/** Short boom after jet strike (lighter than full nuke) */
+export function playTacticalStrikeImpact(): void {
+  if (!canOutputSound() || !audioContext) return;
+  const c = audioContext;
+  const dur = 0.55;
+  const bufferSize = Math.floor(c.sampleRate * dur);
+  const buffer = c.createBuffer(1, bufferSize, c.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) {
+    const t = i / bufferSize;
+    const decay = (1 - t) * (1 - t);
+    data[i] = (Math.random() * 2 - 1) * decay * 0.85;
+  }
+  const src = c.createBufferSource();
+  src.buffer = buffer;
+  const low = c.createBiquadFilter();
+  low.type = "lowpass";
+  low.frequency.setValueAtTime(1800, c.currentTime);
+  low.frequency.exponentialRampToValueAtTime(120, c.currentTime + dur);
+  const g = c.createGain();
+  g.gain.setValueAtTime(0.38, c.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.01, c.currentTime + dur);
+  src.connect(low);
+  low.connect(g);
+  g.connect(c.destination);
+  src.start();
+  src.stop(c.currentTime + dur);
+}
+
+/** Distorted radio burst (procurement / comms) */
+export function playRadioChatter(): void {
+  if (!canOutputSound() || !audioContext) return;
+  const c = audioContext;
+  const dur = 0.42;
+  const bufferSize = Math.floor(c.sampleRate * dur);
+  const buffer = c.createBuffer(1, bufferSize, c.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) {
+    const crackle = (Math.random() * 2 - 1) * 0.9;
+    const voice = Math.sin(i * 0.07) * Math.sin(i * 0.031) * 0.25;
+    const gate = i < bufferSize * 0.15 || i > bufferSize * 0.85 ? 0.4 : 1;
+    data[i] = (crackle + voice) * gate;
+  }
+  const src = c.createBufferSource();
+  src.buffer = buffer;
+  const distort = c.createWaveShaper();
+  const curve = new Float32Array(256);
+  for (let i = 0; i < 256; i++) {
+    const x = (i / 128) - 1;
+    curve[i] = Math.tanh(x * 3.2);
+  }
+  distort.curve = curve;
+  const hp = c.createBiquadFilter();
+  hp.type = "highpass";
+  hp.frequency.value = 380;
+  const g = c.createGain();
+  g.gain.setValueAtTime(0.2, c.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.01, c.currentTime + dur);
+  src.connect(distort);
+  distort.connect(hp);
+  hp.connect(g);
+  g.connect(c.destination);
+  src.start();
+  src.stop(c.currentTime + dur);
+}
+
+let droneOsc: OscillatorNode | null = null;
+let droneFilter: BiquadFilterNode | null = null;
+let droneGain: GainNode | null = null;
+
+export function isTacticalDroneRunning(): boolean {
+  return droneOsc !== null;
+}
+
+export function startTacticalDrone(): void {
+  if (typeof window === "undefined") return;
+  if (audioMuted) return;
+  if (!audioContext || audioContext.state !== "running") return;
+  stopTacticalDrone();
+  const c = audioContext;
+  droneOsc = c.createOscillator();
+  droneOsc.type = "sawtooth";
+  droneOsc.frequency.value = 52;
+  droneFilter = c.createBiquadFilter();
+  droneFilter.type = "lowpass";
+  droneFilter.frequency.value = 420;
+  droneGain = c.createGain();
+  droneGain.gain.value = 0.028;
+  droneOsc.connect(droneFilter);
+  droneFilter.connect(droneGain);
+  droneGain.connect(c.destination);
+  droneOsc.start();
+}
+
+export function stopTacticalDrone(): void {
+  try {
+    droneOsc?.stop();
+  } catch {
+    /* already stopped */
+  }
+  droneOsc = null;
+  droneFilter = null;
+  droneGain = null;
+}
+
+/** Raise pitch / brightness / level as more threats are on screen */
+export function setTacticalDroneTension(enemyCount: number): void {
+  if (audioMuted) return;
+  if (!droneOsc || !droneFilter || !droneGain || !audioContext) return;
+  const c = audioContext;
+  const t = c.currentTime;
+  const n = Math.min(Math.max(0, enemyCount), 45);
+  const stress = n / 45;
+  droneOsc.frequency.cancelScheduledValues(t);
+  droneOsc.frequency.linearRampToValueAtTime(48 + stress * 95, t + 0.12);
+  droneFilter.frequency.cancelScheduledValues(t);
+  droneFilter.frequency.linearRampToValueAtTime(320 + stress * 2400, t + 0.15);
+  droneGain.gain.cancelScheduledValues(t);
+  droneGain.gain.linearRampToValueAtTime(0.022 + stress * 0.085, t + 0.12);
+}
+
+/** Short ceremonial fanfare for rank promotion */
+export function playMilitaryFanfare(): void {
+  if (!canOutputSound() || !audioContext) return;
+  const c = audioContext;
+  const notes = [392, 523.25, 659.25, 783.99];
+  const t0 = c.currentTime;
+  notes.forEach((freq, i) => {
+    const start = t0 + i * 0.11;
+    const osc = c.createOscillator();
+    const g = c.createGain();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(freq, start);
+    g.gain.setValueAtTime(0, start);
+    g.gain.linearRampToValueAtTime(0.13, start + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, start + 0.28);
+    osc.connect(g);
+    g.connect(c.destination);
+    osc.start(start);
+    osc.stop(start + 0.3);
+  });
+  const buzz = c.createOscillator();
+  const bg = c.createGain();
+  buzz.type = "square";
+  buzz.frequency.setValueAtTime(880, t0 + 0.35);
+  bg.gain.setValueAtTime(0, t0 + 0.34);
+  bg.gain.linearRampToValueAtTime(0.04, t0 + 0.36);
+  bg.gain.exponentialRampToValueAtTime(0.001, t0 + 0.65);
+  buzz.connect(bg);
+  bg.connect(c.destination);
+  buzz.start(t0 + 0.34);
+  buzz.stop(t0 + 0.66);
 }

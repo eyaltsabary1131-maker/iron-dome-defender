@@ -9,12 +9,15 @@ import {
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
+/** Leaderboard: `scores` collection, highest score first, cap 10 for radar terminal UI. */
+const TOP_SCORES_LIMIT = 10;
+
 export async function GET() {
   try {
     const q = query(
       collection(db, "scores"),
       orderBy("score", "desc"),
-      limit(10),
+      limit(TOP_SCORES_LIMIT),
     );
     const snapshot = await getDocs(q);
     const scores = snapshot.docs.map((docSnap) => {

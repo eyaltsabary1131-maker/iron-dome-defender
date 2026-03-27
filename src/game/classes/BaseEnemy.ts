@@ -6,6 +6,8 @@ export class BaseEnemy extends Phaser.Physics.Arcade.Sprite {
   public scoreValue = 10;
   /** Wave / endless scaling */
   public speedScale = 1;
+  /** Rockets / MIRV fragments: no falling debris when shot down */
+  public spawnsDebrisOnKill = true;
 
   constructor(
     scene: Phaser.Scene,

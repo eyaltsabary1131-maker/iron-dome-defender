@@ -1,5 +1,7 @@
 import * as Phaser from "phaser";
+import { TextureKeys } from "@/game/assets/textureKeys";
 import { BaseEnemy } from "@/game/classes/BaseEnemy";
+import { radarTextStyle } from "@/game/ui/radarStyle";
 
 const ENTRY_Y = 150;
 const ENTRY_SPEED = 55;
@@ -39,7 +41,7 @@ export class BossEnemy extends BaseEnemy {
     onRocketBurst: (x: number, y: number) => void,
     tier: number,
   ) {
-    super(scene, x, y, "enemy_white");
+    super(scene, x, y, TextureKeys.enemyBallistic);
     this.onRocketBurst = onRocketBurst;
     this.tier = Math.max(0, tier);
 
@@ -64,12 +66,12 @@ export class BossEnemy extends BaseEnemy {
     this.hpBar = scene.add.graphics();
     this.hpBar.setDepth(120);
 
-    this.titleLabel = scene.add.text(x, y - 92, "QUDS FORCE COMMANDER", {
-      fontFamily: "system-ui, sans-serif",
-      fontSize: "11px",
-      color: titleColorForTier(this.tier),
-      fontStyle: "bold",
-    });
+    this.titleLabel = scene.add.text(
+      x,
+      y - 92,
+      "QUDS FORCE COMMANDER",
+      radarTextStyle("12px", titleColorForTier(this.tier)),
+    );
     this.titleLabel.setOrigin(0.5);
     this.titleLabel.setDepth(119);
 
