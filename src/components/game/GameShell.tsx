@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useCallback, useState } from "react";
+import { GlobalThreatsBanner } from "@/components/game/GlobalThreatsBanner";
 import { HowToPlayScreen } from "@/components/game/HowToPlayScreen";
 import { ThreatManualScreen } from "@/components/game/ThreatManualScreen";
 
@@ -42,6 +43,8 @@ export function GameShell() {
         gap: "1rem",
       }}
     >
+      {(phase === "howto" || phase === "menu") && <GlobalThreatsBanner />}
+
       {phase === "howto" && (
         <HowToPlayScreen onContinue={() => setPhase("menu")} />
       )}

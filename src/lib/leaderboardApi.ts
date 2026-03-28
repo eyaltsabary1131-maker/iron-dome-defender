@@ -18,6 +18,7 @@ export async function submitScore(payload: {
   playerName: string;
   score: number;
   wave: number;
+  totalEnemiesDestroyed?: number;
 }): Promise<LeaderboardEntry> {
   const res = await fetch("/api/scores", {
     method: "POST",

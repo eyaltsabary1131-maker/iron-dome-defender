@@ -119,6 +119,7 @@ export function Leaderboard({
         playerName: trimmed,
         score: finalScore,
         wave: finalWave,
+        totalEnemiesDestroyed: debrief.totalEnemiesDestroyed,
       });
       setScoreSubmitted(true);
       await loadLeaderboard();

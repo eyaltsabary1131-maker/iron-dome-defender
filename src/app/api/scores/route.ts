@@ -2,10 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   collection,
   addDoc,
+  doc,
   getDocs,
+  increment,
   query,
   orderBy,
   limit,
+  setDoc,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
@@ -77,13 +80,36 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const killsRaw = raw.totalEnemiesDestroyed;
+    const killsNum =
+      killsRaw === undefined || killsRaw === null
+        ? 0
+        : Number(killsRaw);
+    const safeKills =
+      Number.isFinite(killsNum) &&
+      Number.isInteger(killsNum) &&
+      killsNum > 0 &&
+      killsNum <= 100_000
+        ? killsNum
+        : 0;
+
     const createdAt = new Date().toISOString();
     const docRef = await addDoc(collection(db, "scores"), {
       playerName,
       score: scoreNum,
       wave: waveNum,
       createdAt,
+      ...(safeKills > 0 ? { totalEnemiesDestroyed: safeKills } : {}),
     });
+
+    if (safeKills > 0) {
+      const metricsRef = doc(db, "stats", "global_metrics");
+      await setDoc(
+        metricsRef,
+        { total_intercepts: increment(safeKills) },
+        { merge: true },
+      );
+    }
 
     const record = {
       id: docRef.id,

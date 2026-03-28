@@ -197,6 +197,28 @@ export function playPowerUpLevelUp(): void {
   });
 }
 
+/** Short triumphant sting when an in-run achievement unlocks */
+export function playAchievementSound(): void {
+  if (!canOutputSound() || !audioContext) return;
+  const c = audioContext;
+  const t0 = c.currentTime;
+  const freqs = [392, 523.25, 659.25, 783.99, 987.77];
+  freqs.forEach((freq, i) => {
+    const start = t0 + i * 0.042;
+    const osc = c.createOscillator();
+    const g = c.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, start);
+    g.gain.setValueAtTime(0, start);
+    g.gain.linearRampToValueAtTime(0.11, start + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.001, start + 0.16);
+    osc.connect(g);
+    g.connect(c.destination);
+    osc.start(start);
+    osc.stop(start + 0.17);
+  });
+}
+
 export function playBossWarning(): void {
   if (!canOutputSound() || !audioContext) return;
   const c = audioContext;
@@ -371,6 +393,48 @@ export function playTacticalStrikeImpact(): void {
   src.stop(c.currentTime + dur);
 }
 
+/**
+ * Pleasant “upgrade unlocked” chime for armory purchases — C major arpeggio,
+ * soft triangle voices with a gentle release tail.
+ */
+export function playPurchaseChime(): void {
+  if (!canOutputSound() || !audioContext) return;
+  const c = audioContext;
+  const t0 = c.currentTime;
+  /** C4 → E4 → G4 → C5 */
+  const freqs = [261.63, 329.63, 392.0, 523.25];
+  const step = 0.07;
+  const noteDur = 0.42;
+
+  freqs.forEach((freq, i) => {
+    const t = t0 + i * step;
+    const osc = c.createOscillator();
+    const g = c.createGain();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.1, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, t + noteDur);
+    osc.connect(g);
+    g.connect(c.destination);
+    osc.start(t);
+    osc.stop(t + noteDur + 0.02);
+  });
+
+  const tShimmer = t0 + (freqs.length - 1) * step + 0.04;
+  const hi = c.createOscillator();
+  const hg = c.createGain();
+  hi.type = "sine";
+  hi.frequency.setValueAtTime(1046.5, tShimmer);
+  hg.gain.setValueAtTime(0, tShimmer);
+  hg.gain.linearRampToValueAtTime(0.035, tShimmer + 0.03);
+  hg.gain.exponentialRampToValueAtTime(0.001, tShimmer + 0.55);
+  hi.connect(hg);
+  hg.connect(c.destination);
+  hi.start(tShimmer);
+  hi.stop(tShimmer + 0.58);
+}
+
 /** Distorted radio burst (procurement / comms) */
 export function playRadioChatter(): void {
   if (!canOutputSound() || !audioContext) return;
@@ -494,4 +558,115 @@ export function playMilitaryFanfare(): void {
   bg.connect(c.destination);
   buzz.start(t0 + 0.34);
   buzz.stop(t0 + 0.66);
+}
+
+/** Mouse wheel volley step — short mechanical click/clack */
+export function playVolleyChange(): void {
+  if (!canOutputSound() || !audioContext) return;
+  const c = audioContext;
+  const t0 = c.currentTime;
+  const click = (start: number, freq: number) => {
+    const osc = c.createOscillator();
+    const g = c.createGain();
+    osc.type = "square";
+    osc.frequency.setValueAtTime(freq, start);
+    g.gain.setValueAtTime(0.045, start);
+    g.gain.exponentialRampToValueAtTime(0.001, start + 0.022);
+    osc.connect(g);
+    g.connect(c.destination);
+    osc.start(start);
+    osc.stop(start + 0.028);
+  };
+  click(t0, 620);
+  click(t0 + 0.032, 380);
+}
+
+/** Left+right manual reload — pump / chamber */
+export function playManualReload(): void {
+  if (!canOutputSound() || !audioContext) return;
+  const c = audioContext;
+  const t0 = c.currentTime;
+  const osc = c.createOscillator();
+  const g = c.createGain();
+  osc.type = "triangle";
+  osc.frequency.setValueAtTime(95, t0);
+  osc.frequency.exponentialRampToValueAtTime(220, t0 + 0.045);
+  osc.frequency.exponentialRampToValueAtTime(140, t0 + 0.11);
+  g.gain.setValueAtTime(0.11, t0);
+  g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.14);
+  osc.connect(g);
+  g.connect(c.destination);
+  osc.start(t0);
+  osc.stop(t0 + 0.15);
+
+  const clack = c.createOscillator();
+  const cg = c.createGain();
+  clack.type = "square";
+  clack.frequency.setValueAtTime(180, t0 + 0.1);
+  cg.gain.setValueAtTime(0, t0 + 0.098);
+  cg.gain.linearRampToValueAtTime(0.055, t0 + 0.102);
+  cg.gain.exponentialRampToValueAtTime(0.001, t0 + 0.16);
+  clack.connect(cg);
+  cg.connect(c.destination);
+  clack.start(t0 + 0.098);
+  clack.stop(t0 + 0.17);
+}
+
+/** Cannot afford shot — low harsh buzz */
+export function playErrorBuzzer(): void {
+  if (!canOutputSound() || !audioContext) return;
+  const c = audioContext;
+  const t = c.currentTime;
+  const osc = c.createOscillator();
+  const g = c.createGain();
+  osc.type = "sawtooth";
+  osc.frequency.setValueAtTime(72, t);
+  osc.frequency.linearRampToValueAtTime(55, t + 0.14);
+  const filter = c.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.setValueAtTime(420, t);
+  filter.frequency.exponentialRampToValueAtTime(90, t + 0.16);
+  g.gain.setValueAtTime(0.1, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+  osc.connect(filter);
+  filter.connect(g);
+  g.connect(c.destination);
+  osc.start(t);
+  osc.stop(t + 0.22);
+}
+
+/** Auto-turret — very quiet soft “pew” */
+export function playAutoTurretFire(): void {
+  if (!canOutputSound() || !audioContext) return;
+  const c = audioContext;
+  const t = c.currentTime;
+  const osc = c.createOscillator();
+  const g = c.createGain();
+  osc.type = "triangle";
+  osc.frequency.setValueAtTime(1180, t);
+  osc.frequency.exponentialRampToValueAtTime(520, t + 0.05);
+  g.gain.setValueAtTime(0.018, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+  osc.connect(g);
+  g.connect(c.destination);
+  osc.start(t);
+  osc.stop(t + 0.075);
+}
+
+/** Debris sweeper — quiet high zap */
+export function playSweeperZap(): void {
+  if (!canOutputSound() || !audioContext) return;
+  const c = audioContext;
+  const t = c.currentTime;
+  const osc = c.createOscillator();
+  const g = c.createGain();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(3200, t);
+  osc.frequency.exponentialRampToValueAtTime(4800, t + 0.018);
+  g.gain.setValueAtTime(0.012, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.035);
+  osc.connect(g);
+  g.connect(c.destination);
+  osc.start(t);
+  osc.stop(t + 0.04);
 }

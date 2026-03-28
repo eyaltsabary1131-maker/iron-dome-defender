@@ -71,6 +71,20 @@ export function HowToPlayScreen({ onContinue }: { onContinue: () => void }) {
         </li>
         <li>Between waves, spend credits in the Armory. Protect both HVT sites.</li>
       </ul>
+      <p
+        style={{
+          margin: "0 0 14px",
+          fontSize: 10,
+          letterSpacing: "0.06em",
+          color: "#ffbf00",
+          opacity: 0.92,
+          textAlign: "center",
+          textShadow: "0 0 8px rgba(255,191,0,0.25)",
+        }}
+      >
+        Community-wide intercepts are tallied above — every sortie adds to the
+        global defense effort when you submit your score.
+      </p>
       <button
         type="button"
         onClick={onContinue}

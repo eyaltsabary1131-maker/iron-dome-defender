@@ -7,7 +7,9 @@ import {
   emitShopContinueRequest,
   emitShopPurchaseRequest,
   subscribeGameEvents,
+  type AchievementUnlockedDetail,
   type AmmoDetail,
+  type BossEncounterDetail,
   type GameOverDebriefDetail,
   type JokerChargeDetail,
   type ShopPanelDetail,
@@ -42,6 +44,10 @@ const CLOSED_SHOP: ShopPanelDetail = {
   rapidReloadLevel: 0,
   extendedMagLevel: 0,
   propulsionLevel: 0,
+  autoTurretLevel: 0,
+  debrisSweeperLevel: 0,
+  extendedRangeLevel: 0,
+  repairCrewsOwned: false,
   hearts: ECONOMY.MAX_HEARTS,
   maxHearts: ECONOMY.MAX_HEARTS,
 };
@@ -154,6 +160,8 @@ export function GameHUD() {
     currentAmmo: LAUNCHER_MAG_CAPACITY,
     maxAmmo: LAUNCHER_MAG_CAPACITY,
     isReloading: false,
+    volleySize: 1,
+    nextSalvoCredits: 5,
   });
   const [lowAmmoPulse, setLowAmmoPulse] = useState(true);
   const [tacticalStrike, setTacticalStrike] =
@@ -164,7 +172,7 @@ export function GameHUD() {
 
   const [waveBannerSeq, setWaveBannerSeq] = useState(0);
   const [waveBannerOpacity, setWaveBannerOpacity] = useState(0);
-  const [credits, setCredits] = useState(0);
+  const [credits, setCredits] = useState<number>(ECONOMY.STARTING_CREDITS);
   const [shop, setShop] = useState<ShopPanelDetail>(CLOSED_SHOP);
   const [strategic, setStrategic] =
     useState<StrategicAssetsDetail>(DEFAULT_STRATEGIC);
@@ -172,6 +180,28 @@ export function GameHUD() {
     useState<GameOverDebriefDetail | null>(null);
   const [pwrLevelFlash, setPwrLevelFlash] = useState(false);
   const lastPowerLevelRef = useRef(1);
+  const [bossEncounter, setBossEncounter] = useState<BossEncounterDetail>({
+    active: false,
+  });
+  const [achievementToast, setAchievementToast] =
+    useState<AchievementUnlockedDetail | null>(null);
+  const [achievementPeek, setAchievementPeek] = useState(false);
+  const [volleyHudPulse, setVolleyHudPulse] = useState(false);
+
+  useEffect(() => {
+    if (!achievementToast) {
+      setAchievementPeek(false);
+      return;
+    }
+    const slideIn = window.setTimeout(() => setAchievementPeek(true), 40);
+    const slideOut = window.setTimeout(() => setAchievementPeek(false), 3040);
+    const remove = window.setTimeout(() => setAchievementToast(null), 3680);
+    return () => {
+      clearTimeout(slideIn);
+      clearTimeout(slideOut);
+      clearTimeout(remove);
+    };
+  }, [achievementToast]);
 
   useEffect(() => {
     if (weapon.powerLevel > lastPowerLevelRef.current) {
@@ -196,14 +226,20 @@ export function GameHUD() {
         setPwrLevelFlash(false);
         setWeapon(DEFAULT_WEAPON);
         setTacticalStrike(DEFAULT_TACTICAL_STRIKE);
-        setCredits(0);
+        setCredits(ECONOMY.STARTING_CREDITS);
         setShop(CLOSED_SHOP);
         setStrategic(DEFAULT_STRATEGIC);
+        setBossEncounter({ active: false });
+        setAchievementToast(null);
+        setAchievementPeek(false);
+        setVolleyHudPulse(false);
         setHearts(ECONOMY.MAX_HEARTS);
         setAmmo({
           currentAmmo: LAUNCHER_MAG_CAPACITY,
           maxAmmo: LAUNCHER_MAG_CAPACITY,
           isReloading: false,
+          volleySize: 1,
+          nextSalvoCredits: 5,
         });
       },
       onCreditsUpdated: setCredits,
@@ -215,6 +251,12 @@ export function GameHUD() {
       onWaveChanged: (w) => {
         setWave(w);
         setWaveBannerSeq((s) => s + 1);
+      },
+      onBossEncounterUpdated: setBossEncounter,
+      onAchievementUnlocked: setAchievementToast,
+      onVolleyChanged: () => {
+        setVolleyHudPulse(true);
+        window.setTimeout(() => setVolleyHudPulse(false), 220);
       },
     });
   }, []);
@@ -275,7 +317,7 @@ export function GameHUD() {
           zIndex: 7,
           pointerEvents: "none",
           background:
-            "radial-gradient(ellipse 72% 68% at 50% 46%, transparent 0%, rgba(0,0,0,0.42) 72%, rgba(0,0,0,0.72) 100%)",
+            "radial-gradient(ellipse 74% 70% at 50% 44%, transparent 0%, rgba(0,12,24,0.38) 58%, rgba(0,0,0,0.55) 78%, rgba(0,0,0,0.82) 100%)",
         }}
       />
       <div
@@ -294,10 +336,107 @@ export function GameHUD() {
           color: "#39ff14",
           letterSpacing: "0.04em",
           textShadow:
-            "0 0 8px rgba(57, 255, 20, 0.35), 0 1px 4px rgba(0,0,0,0.9)",
+            "0 0 12px rgba(120, 230, 255, 0.28), 0 0 10px rgba(57, 255, 20, 0.42), 0 2px 6px rgba(0,0,0,0.95)",
           zIndex: 10,
         }}
       >
+        {bossEncounter.active ? (
+          <div
+            style={{
+              position: "absolute",
+              top: 2,
+              left: "50%",
+              transform: "translateX(-50%)",
+              width: "min(92vw, 720px)",
+              pointerEvents: "none",
+              zIndex: 11,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 900,
+                letterSpacing: "0.28em",
+                color: "#ff2a2a",
+                textAlign: "center",
+                marginBottom: 4,
+                textShadow:
+                  "0 0 12px rgba(255,40,40,0.85), 0 0 24px rgba(180,0,0,0.45)",
+              }}
+            >
+              BOSS HP
+            </div>
+            <div
+              style={{
+                height: 16,
+                borderRadius: 2,
+                border: "2px solid rgba(255,50,50,0.95)",
+                background: "rgba(8,0,0,0.75)",
+                boxShadow:
+                  "inset 0 0 14px rgba(0,0,0,0.9), 0 0 16px rgba(255,30,30,0.35)",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  height: "100%",
+                  width: `${Math.max(
+                    0,
+                    Math.min(
+                      100,
+                      (bossEncounter.currentHp / bossEncounter.maxHp) * 100,
+                    ),
+                  )}%`,
+                  background:
+                    "linear-gradient(180deg, #ff5555 0%, #cc0000 48%, #880000 100%)",
+                  boxShadow: "0 0 10px rgba(255,80,80,0.6)",
+                  transition: "width 0.12s ease-out",
+                }}
+              />
+            </div>
+          </div>
+        ) : null}
+        {achievementToast ? (
+          <div
+            style={{
+              position: "absolute",
+              top: 52,
+              left: "50%",
+              zIndex: 13,
+              maxWidth: "min(94vw, 640px)",
+              pointerEvents: "none",
+              transform: achievementPeek
+                ? "translate(-50%, 0)"
+                : "translate(-50%, -160%)",
+              opacity: achievementPeek ? 1 : 0,
+              transition:
+                "transform 0.45s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.35s ease",
+            }}
+          >
+            <div
+              style={{
+                fontFamily: mono,
+                fontSize: 13,
+                fontWeight: 900,
+                letterSpacing: "0.1em",
+                textAlign: "center",
+                lineHeight: 1.45,
+                padding: "12px 18px",
+                borderRadius: 4,
+                border: "2px solid rgba(255, 215, 80, 0.95)",
+                color: "#1a1200",
+                background:
+                  "linear-gradient(175deg, #fff4c4 0%, #ffcc33 38%, #e6a800 100%)",
+                boxShadow:
+                  "0 0 28px rgba(255, 200, 60, 0.55), inset 0 1px 0 rgba(255,255,255,0.65)",
+                textShadow: "0 1px 0 rgba(255,255,255,0.5)",
+              }}
+            >
+              🏆 ACHIEVEMENT UNLOCKED: {achievementToast.displayName}! +
+              {achievementToast.rewardCredits} CR
+            </div>
+          </div>
+        ) : null}
         <button
           type="button"
           onClick={toggleMute}
@@ -378,6 +517,30 @@ export function GameHUD() {
               }}
             >
               AMMO: {ammo.currentAmmo} / {ammo.maxAmmo}
+            </span>
+            <span
+              style={{
+                marginLeft: 14,
+                padding: "2px 8px",
+                border: "1px solid rgba(127,216,255,0.45)",
+                borderRadius: 2,
+                fontSize: 10,
+                fontWeight: 800,
+                letterSpacing: "0.08em",
+                display: "inline-block",
+                transform: volleyHudPulse ? "scale(1.12)" : "scale(1)",
+                transformOrigin: "center center",
+                color: volleyHudPulse ? "#ffffff" : "#7fd8ff",
+                textShadow: volleyHudPulse
+                  ? "0 0 14px rgba(255,255,255,0.95), 0 0 6px rgba(255,255,255,0.6)"
+                  : "0 0 8px rgba(127,216,255,0.35)",
+                transition:
+                  "color 0.07s ease, transform 0.12s ease-out, text-shadow 0.1s ease",
+              }}
+              title="Mouse wheel: cycle salvo size. Left+right click: manual reload."
+            >
+              VOLLEY ×{ammo.volleySize ?? 1} · −{ammo.nextSalvoCredits ?? 0}{" "}
+              CR/salvo
             </span>
             <span
               style={{
@@ -522,21 +685,24 @@ export function GameHUD() {
             style={{
               display: "flex",
               flexWrap: "wrap",
-              gap: 8,
+              alignItems: "baseline",
+              gap: "10px 14px",
               fontSize: 10,
               letterSpacing: "0.06em",
-              opacity: 0.88,
+              opacity: 0.94,
+              textShadow:
+                "0 0 12px rgba(130, 220, 255, 0.4), 0 2px 6px rgba(0,0,0,0.92)",
             }}
           >
-            <span style={{ color: "#7fd8ff" }}>
-              HVT — {STRATEGIC_ASSETS.power_plant.displayName}:{" "}
+            <span style={{ color: "#a8ecff", fontWeight: 700 }}>
+              {STRATEGIC_ASSETS.power_plant.displayName}:{" "}
               {strategic.powerPlantHp}/{strategic.maxHp}
             </span>
-            <span style={{ color: "#b8e8a8" }}>
+            <span style={{ color: "#c8f8b8", fontWeight: 700 }}>
               {STRATEGIC_ASSETS.military_base.displayName}:{" "}
               {strategic.militaryBaseHp}/{strategic.maxHp}
             </span>
-            <span style={{ color: "#88aacc", opacity: 0.85 }}>
+            <span style={{ color: "#b8e4ff", opacity: 0.95, fontWeight: 600 }}>
               Protection: +{PROTECTION_BONUS_CREDITS} CR/wave if both intact
             </span>
           </div>
@@ -577,13 +743,16 @@ export function GameHUD() {
             inset: 0,
             zIndex: 18,
             display: "flex",
+            flexDirection: "column",
             alignItems: "center",
-            justifyContent: "center",
+            justifyContent: "flex-start",
             pointerEvents: "auto",
+            padding: "0 16px 16px",
+            paddingTop: 80,
+            boxSizing: "border-box",
             background:
               "radial-gradient(ellipse at 50% 20%, rgba(20,60,30,0.5) 0%, transparent 55%), linear-gradient(180deg, rgba(2,8,4,0.96) 0%, rgba(4,18,10,0.97) 100%)",
             backdropFilter: "blur(3px)",
-            padding: 16,
           }}
         >
           <div
@@ -591,12 +760,17 @@ export function GameHUD() {
               position: "relative",
               width: "100%",
               maxWidth: 520,
+              marginTop: 0,
+              flex: 1,
+              minHeight: 0,
+              display: "flex",
+              flexDirection: "column",
               border: "2px solid rgba(57,255,20,0.5)",
               borderRadius: 4,
               boxShadow:
                 "inset 0 0 50px rgba(0,50,24,0.45), 0 0 28px rgba(57,255,20,0.18)",
               background: "rgba(0,14,6,0.94)",
-              padding: "22px 20px 20px",
+              padding: "18px 16px 0",
               fontFamily: mono,
               color: "#39ff14",
               overflow: "hidden",
@@ -618,6 +792,10 @@ export function GameHUD() {
               style={{
                 position: "relative",
                 zIndex: 1,
+                display: "flex",
+                flexDirection: "column",
+                flex: 1,
+                minHeight: 0,
               }}
             >
               <div
@@ -628,6 +806,7 @@ export function GameHUD() {
                   marginBottom: 2,
                   fontWeight: 800,
                   color: "#5dff4a",
+                  flexShrink: 0,
                 }}
               >
                 TERMINAL // MILITARY ARMORY
@@ -641,11 +820,19 @@ export function GameHUD() {
                   color: "#ffbf00",
                   textShadow:
                     "0 0 14px rgba(255,191,0,0.4), 0 0 2px rgba(0,0,0,1)",
+                  flexShrink: 0,
                 }}
               >
                 WAVE {shop.waveJustCompleted} SECURED
               </h2>
-              <p style={{ margin: "0 0 6px", fontSize: 12, opacity: 0.9 }}>
+              <p
+                style={{
+                  margin: "0 0 6px",
+                  fontSize: 12,
+                  opacity: 0.9,
+                  flexShrink: 0,
+                }}
+              >
                 BUDGET{" "}
                 <strong style={{ color: "#7fd8ff" }}>{shop.credits} CR</strong>
                 <span style={{ marginLeft: 14, opacity: 0.85 }}>
@@ -654,11 +841,12 @@ export function GameHUD() {
               </p>
               <p
                 style={{
-                  margin: "0 0 14px",
+                  margin: "0 0 12px",
                   fontSize: 9,
                   opacity: 0.68,
                   letterSpacing: "0.06em",
                   lineHeight: 1.45,
+                  flexShrink: 0,
                 }}
               >
                 RESOURCE EFF: +{ECONOMY.RESOURCE_EFFICIENCY_PER_ROUND} CR per
@@ -667,11 +855,23 @@ export function GameHUD() {
               </p>
               <div
                 style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: 12,
+                  flex: 1,
+                  minHeight: 0,
+                  overflowY: "auto",
+                  overflowX: "hidden",
+                  WebkitOverflowScrolling: "touch",
+                  paddingRight: 4,
+                  marginRight: -4,
                 }}
               >
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: 12,
+                    paddingBottom: 8,
+                  }}
+                >
                 <ArmoryTile
                   icon="⚡"
                   title="RAPID RELOAD"
@@ -716,26 +916,84 @@ export function GameHUD() {
                   }
                   upgradeId="buy_life"
                 />
+                <ArmoryTile
+                  icon="🎯"
+                  title="AUTO-TURRET"
+                  subtitle={`Random enemy · every ${(Math.max(0.9, 5 - 0.4 * shop.autoTurretLevel)).toFixed(1)}s · LVL ${shop.autoTurretLevel}/${ECONOMY.AUTO_TURRET_MAX}`}
+                  cost={ECONOMY.AUTO_TURRET_COST}
+                  disabled={
+                    shop.autoTurretLevel >= ECONOMY.AUTO_TURRET_MAX ||
+                    shop.credits < ECONOMY.AUTO_TURRET_COST
+                  }
+                  upgradeId="auto_turret"
+                />
+                <ArmoryTile
+                  icon="✦"
+                  title="DEBRIS SWEEPER"
+                  subtitle={`Vaporize 1 debris · every ${(Math.max(0.5, 4 - 0.3 * shop.debrisSweeperLevel)).toFixed(1)}s · LVL ${shop.debrisSweeperLevel}/${ECONOMY.DEBRIS_SWEEPER_MAX}`}
+                  cost={ECONOMY.DEBRIS_SWEEPER_COST}
+                  disabled={
+                    shop.debrisSweeperLevel >= ECONOMY.DEBRIS_SWEEPER_MAX ||
+                    shop.credits < ECONOMY.DEBRIS_SWEEPER_COST
+                  }
+                  upgradeId="debris_sweeper"
+                />
+                <ArmoryTile
+                  icon="◎"
+                  title="EXTENDED RANGE"
+                  subtitle={`Beam column + splash radius +${Math.round(5.5 * shop.extendedRangeLevel)}% · LVL ${shop.extendedRangeLevel}/${ECONOMY.EXTENDED_RANGE_MAX}`}
+                  cost={ECONOMY.EXTENDED_RANGE_COST}
+                  disabled={
+                    shop.extendedRangeLevel >= ECONOMY.EXTENDED_RANGE_MAX ||
+                    shop.credits < ECONOMY.EXTENDED_RANGE_COST
+                  }
+                  upgradeId="extended_range"
+                />
+                <ArmoryTile
+                  icon="🔧"
+                  title="REPAIR CREWS"
+                  subtitle={
+                    shop.repairCrewsOwned
+                      ? "OWNED — +1 HP each HVT at every wave start."
+                      : "+1 HP to each surviving HVT at start of every wave."
+                  }
+                  cost={ECONOMY.REPAIR_CREWS_COST}
+                  disabled={
+                    shop.repairCrewsOwned ||
+                    shop.credits < ECONOMY.REPAIR_CREWS_COST
+                  }
+                  upgradeId="repair_crews"
+                />
+                </div>
               </div>
               <button
                 type="button"
                 onClick={() => emitShopContinueRequest()}
                 style={{
                   position: "relative",
-                  zIndex: 1,
-                  marginTop: 18,
-                  width: "100%",
+                  zIndex: 30,
+                  flexShrink: 0,
+                  marginTop: 12,
+                  marginLeft: -16,
+                  marginRight: -16,
+                  marginBottom: 0,
+                  width: "calc(100% + 32px)",
+                  maxWidth: "none",
                   padding: "14px 16px",
                   fontFamily: mono,
                   fontSize: 14,
                   fontWeight: 900,
                   letterSpacing: "0.18em",
                   cursor: "pointer",
-                  border: "2px solid #39ff14",
-                  borderRadius: 2,
-                  background: "rgba(57,255,20,0.14)",
+                  pointerEvents: "auto",
+                  border: "none",
+                  borderTop: "2px solid rgba(57,255,20,0.55)",
+                  borderRadius: "0 0 2px 2px",
+                  background:
+                    "linear-gradient(180deg, rgba(0,22,10,0.98) 0%, rgba(0,36,16,0.99) 100%)",
                   color: "#39ff14",
-                  boxShadow: "0 0 20px rgba(57,255,20,0.28)",
+                  boxShadow:
+                    "0 -8px 24px rgba(0,0,0,0.45), 0 0 20px rgba(57,255,20,0.22)",
                 }}
               >
                 DEPLOY NEXT WAVE →
@@ -886,6 +1144,7 @@ export function GameHUD() {
             finalWave: wave,
             strategicAssetsIntact: 0,
             wavesCleared: Math.max(0, wave - 1),
+            totalEnemiesDestroyed: 0,
           }
         }
         onPlayAgain={() => emitGameReset()}

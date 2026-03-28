@@ -59,7 +59,104 @@ export const WAVE_CONFIGS: WaveConfig[] = [
 
 export const WAVE_COUNT = WAVE_CONFIGS.length;
 
-/** Red Alert mass-swarm milestone every 5th wave (5, 10, 15, …). */
-export function isRedAlertSwarmWave(wave: number): boolean {
-  return wave > 0 && wave % 5 === 0;
+export type WaveSpawnMode =
+  | { mode: "swarm" }
+  | { mode: "forced"; threat: EnemyThreatKind }
+  | { mode: "weighted"; weights: { ballistic: number; uav: number; rocket: number } };
+
+function softWeightsFromForced(threat: EnemyThreatKind): {
+  ballistic: number;
+  uav: number;
+  rocket: number;
+} {
+  if (threat === "uav") {
+    return { ballistic: 0.22, uav: 0.38, rocket: 0.4 };
+  }
+  if (threat === "ballistic") {
+    return { ballistic: 0.45, uav: 0.2, rocket: 0.35 };
+  }
+  return { ballistic: 0.22, uav: 0.28, rocket: 0.5 };
 }
+
+function scaleWeightsForTier(
+  w: { ballistic: number; uav: number; rocket: number },
+  tier: number,
+): { ballistic: number; uav: number; rocket: number } {
+  let b = w.ballistic;
+  let u = w.uav;
+  let r = w.rocket;
+  const gr = 0.11 * tier;
+  const gb = 0.09 * tier;
+  b += gb;
+  r += gr;
+  u = Math.max(0.05, u - gb - gr);
+  const s = b + u + r;
+  return { ballistic: b / s, uav: u / s, rocket: r / s };
+}
+
+/**
+ * Spawn selection for a wave. After cycle 1 (`tier` ≥ 1), forced-UAV slots become a mixed
+ * distribution so rockets/ballistics scale in endless play instead of locking to UAV-only.
+ */
+export function getWaveSpawnMode(wave: number): WaveSpawnMode {
+  const idx = (wave - 1) % WAVE_COUNT;
+  const cfg = WAVE_CONFIGS[idx]!;
+  const tier = Math.floor((wave - 1) / WAVE_COUNT);
+
+  if (cfg.swarm) {
+    return { mode: "swarm" };
+  }
+  if (tier === 0 && cfg.forcedThreat) {
+    return { mode: "forced", threat: cfg.forcedThreat };
+  }
+
+  const base =
+    tier >= 1 && cfg.forcedThreat
+      ? softWeightsFromForced(cfg.forcedThreat)
+      : { ...cfg.weights };
+
+  return { mode: "weighted", weights: scaleWeightsForTier(base, tier) };
+}
+
+function pct(n: number): string {
+  return `${Math.round(n * 100)}%`;
+}
+
+/** One–two line briefing for the HUD / wave-clear cinematic (wave = the wave about to begin). */
+export function getWaveIntelLine(wave: number): string {
+  if (isBossWave(wave)) {
+    return "EXPECTING: MEGA-BOSS";
+  }
+  if (isRedAlertSwarmWave(wave)) {
+    return "EXPECTING: RED ALERT — MIXED ROCKET / UAV SWARM";
+  }
+
+  const mode = getWaveSpawnMode(wave);
+  if (mode.mode === "swarm") {
+    return "EXPECTING: UAV SWARM PACKS";
+  }
+  if (mode.mode === "forced") {
+    const label =
+      mode.threat === "ballistic"
+        ? "BALLISTIC"
+        : mode.threat === "rocket"
+          ? "ROCKETS"
+          : "UAV";
+    return `EXPECTING: 100% ${label}`;
+  }
+  const { weights: w } = mode;
+  return `EXPECTING: ${pct(w.rocket)} ROCKETS, ${pct(w.ballistic)} BALLISTIC, ${pct(w.uav)} UAV`;
+}
+
+/**
+ * Red Alert mass-swarm on waves 5, 15, 25, … (not on boss milestone waves 10, 20, 30).
+ */
+export function isRedAlertSwarmWave(wave: number): boolean {
+  return wave > 0 && wave % 10 === 5;
+}
+
+/** Mega-boss encounter on waves 10, 20, 30, … */
+export function isBossWave(wave: number): boolean {
+  return wave > 0 && wave % 10 === 0;
+}
+

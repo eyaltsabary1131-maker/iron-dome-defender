@@ -3,8 +3,11 @@ import { TextureKeys } from "@/game/assets/textureKeys";
 import {
   BATTERY_DISPLAY_NAME,
   BATTERY_STATS,
+  INTERCEPTOR_CREDITS_PER_SHOT,
   type BatteryType,
   PROJECTILE_DATA_KEY,
+  WEAPON_EXPLOSION_TINT,
+  WEAPON_VFX_COLOR_HEX,
 } from "@/game/batteryTypes";
 import {
   MAX_WEAPON_POWER_LEVEL,
@@ -15,6 +18,7 @@ import {
 } from "@/game/config/powerUpTypes";
 import { BallisticEnemy } from "@/game/classes/BallisticEnemy";
 import { BaseEnemy } from "@/game/classes/BaseEnemy";
+import { MegaBossEnemy } from "@/game/classes/MegaBossEnemy";
 import { Debris } from "@/game/classes/Debris";
 import { JokerPickup } from "@/game/classes/JokerPickup";
 import { MirvSubmunition } from "@/game/classes/MirvSubmunition";
@@ -36,6 +40,9 @@ import {
   type StrategicAssetKey,
 } from "@/game/config/strategicAssets";
 import {
+  getWaveIntelLine,
+  getWaveSpawnMode,
+  isBossWave,
   isRedAlertSwarmWave,
   WAVE_CONFIGS,
   WAVE_COUNT,
@@ -44,6 +51,8 @@ import { RADAR_AMBER, radarTextStyle } from "@/game/ui/radarStyle";
 import { getRankFromScore, type RankInfo } from "@/game/ranks";
 import {
   emitAmmoUpdated,
+  emitAchievementUnlocked,
+  emitBossEncounterUpdated,
   emitCityHit,
   emitCreditsUpdated,
   emitGameOver,
@@ -52,6 +61,7 @@ import {
   emitScoreUpdated,
   emitShopPanelUpdated,
   emitStrategicAssetsUpdated,
+  emitVolleyChanged,
   emitWaveChanged,
   emitWeaponUpgraded,
   subscribeGameReset,
@@ -64,17 +74,24 @@ import {
   initAudio,
   isAudioMuted,
   isTacticalDroneRunning,
+  playAchievementSound,
+  playAutoTurretFire,
   playDryFireClick,
+  playErrorBuzzer,
   playExplosion,
   playJetFlyby,
   playLaserZap,
+  playManualReload,
   playMilitaryFanfare,
   playPowerUp,
   playPowerUpLevelUp,
+  playPurchaseChime,
   playRadioChatter,
   playRedAlertSiren,
   playShoot,
+  playSweeperZap,
   playTacticalStrikeImpact,
+  playVolleyChange,
   playWaveAlert,
   setTacticalDroneTension,
   startTacticalDrone,
@@ -94,6 +111,16 @@ const PROJECTILE_OOB_PAD_X = 100;
 const MIN_SPAWN_DELAY_MS = 400;
 /** Tactical strike (ex–Joker) charges from interceptor kills. */
 const JOKER_CHARGE_MAX = 20;
+
+const DEFAULT_EXPLOSION_TINT = 0xff6622;
+const MAX_POWER_CREDIT_BONUS = 250;
+const IRON_BEAM_SHAKE_MS = 100;
+const IRON_BEAM_SHAKE_INTENSITY = 0.002;
+const MEGA_BOSS_BOUNTY_CREDITS = 5000;
+const MEGA_BOSS_SCORE_BONUS = 2000;
+const BOSS_DEFEAT_CHAIN_MS = 1500;
+
+const ACH_SHARPSHOOTER_HITS = 15;
 
 const POWERUP_CHANCE_BALLISTIC = 0.38;
 const POWERUP_CHANCE_OTHER = 0.1;
@@ -148,15 +175,35 @@ export class MainScene extends Phaser.Scene {
   private bKey!: Phaser.Input.Keyboard.Key;
   private unsubscribeJoker?: () => void;
   private pointerDownHandler?: (p: Phaser.Input.Pointer) => void;
+  private wheelHandler?: (
+    pointer: Phaser.Input.Pointer,
+    gameObjects: Phaser.GameObjects.GameObject[],
+    deltaX: number,
+    deltaY: number,
+    deltaZ: number,
+  ) => void;
 
   private bgImage!: Phaser.GameObjects.Image;
   private cityStrip!: Phaser.GameObjects.Image;
+  /** Flat vector engagement rings for David's Sling (over Earth, under city strip). */
+  private slingReticleG!: Phaser.GameObjects.Graphics;
 
   private credits = 0;
   private shopOpen = false;
   private rapidReloadLevel = 0;
   private extendedMagLevel = 0;
   private propulsionLevel = 0;
+  private autoTurretLevel = 0;
+  private debrisSweeperLevel = 0;
+  private extendedRangeLevel = 0;
+  private repairCrewsOwned = false;
+  /** Player-chosen missiles per click (1–4); mouse wheel. */
+  private volleySize: 1 | 2 | 3 | 4 = 1;
+  private lastAutoTurretAt = 0;
+  private lastDebrisSweepAt = 0;
+  private wasDualMousePressing = false;
+  /** Accumulates ms toward passive defense funding tick. */
+  private passiveCreditMsAccum = 0;
 
   private unsubscribeShopPurchase?: () => void;
   private unsubscribeShopContinue?: () => void;
@@ -175,12 +222,28 @@ export class MainScene extends Phaser.Scene {
   private postWavePhase: "none" | "waiting_clear" | "cleared_cinematic" =
     "none";
   private waveClearedBanner?: Phaser.GameObjects.Text;
+  private waveIntelBanner?: Phaser.GameObjects.Text;
   private waveClearDelayTimer?: Phaser.Time.TimerEvent;
   /** When `waiting_clear` began — used for 5s no-visible-enemy shop safety */
   private waveClearEnterAt = 0;
   /** Last time a visible enemy was added (spawn / red-alert burst). Used for stuck `waiting_clear`. */
   private lastVisibleEnemySpawnAt = 0;
   private lastGhostEnemyDiagLogAt = -1_000_000;
+  private activeMegaBoss: MegaBossEnemy | null = null;
+  private bossDefeatInProgress = false;
+
+  private readonly runStats = {
+    consecutiveHits: 0,
+    /** Strategic sites still at full HP (0–2). */
+    assetsIntact: 2,
+    swarmsCleared: 0,
+    /** Hostiles neutralized this run (weapon kills, strike, boss adds). */
+    totalEnemiesDestroyed: 0,
+  };
+  private readonly unlockedAchievements = new Set<string>();
+  /** Hearts when the current Red Alert swarm started (for UNTOUCHABLE). */
+  private heartsWhenRedAlertBegan: number | null = null;
+
   constructor() {
     super({ key: "MainScene" });
   }
@@ -194,18 +257,28 @@ export class MainScene extends Phaser.Scene {
       powerLevel: 1,
     });
     emitWaveChanged(1);
+    emitBossEncounterUpdated({ active: false });
 
     this.gameOver = false;
     this.score = 0;
     this.hearts = ECONOMY.MAX_HEARTS;
     emitCityHit(this.hearts);
     this.batteryType = "IRON_DOME";
-    this.credits = 0;
+    this.credits = ECONOMY.STARTING_CREDITS;
     this.shopOpen = false;
     this.rapidReloadLevel = 0;
     this.extendedMagLevel = 0;
     this.propulsionLevel = 0;
-    emitCreditsUpdated(0);
+    this.autoTurretLevel = 0;
+    this.debrisSweeperLevel = 0;
+    this.extendedRangeLevel = 0;
+    this.repairCrewsOwned = false;
+    this.volleySize = 1;
+    this.lastAutoTurretAt = 0;
+    this.lastDebrisSweepAt = 0;
+    this.wasDualMousePressing = false;
+    this.passiveCreditMsAccum = 0;
+    emitCreditsUpdated(ECONOMY.STARTING_CREDITS);
     this.emitShopUi(false);
     this.postWavePhase = "none";
     this.maxAmmo = this.getMagCapacity();
@@ -214,6 +287,13 @@ export class MainScene extends Phaser.Scene {
     this.jokerKillCharge = 0;
     this.redAlertSwarmActive = false;
     this.redAlertTargetKills = 0;
+    this.activeMegaBoss = null;
+    this.bossDefeatInProgress = false;
+    this.unlockedAchievements.clear();
+    this.runStats.consecutiveHits = 0;
+    this.runStats.swarmsCleared = 0;
+    this.runStats.totalEnemiesDestroyed = 0;
+    this.heartsWhenRedAlertBegan = null;
     this.lastBlackoutStaticRedraw = 0;
     this.lastVisibleEnemySpawnAt = this.time.now;
     this.lastGhostEnemyDiagLogAt = -1_000_000;
@@ -224,18 +304,22 @@ export class MainScene extends Phaser.Scene {
     this.currentAmmo = this.maxAmmo;
     this.isReloading = false;
 
-    this.bgImage = this.add.image(WIDTH / 2, HEIGHT / 2, TextureKeys.bgIsrael);
-    this.bgImage.setDisplaySize(WIDTH, HEIGHT);
-    this.bgImage.setDepth(-25);
+    this.configureOrbitalBackground();
 
     this.cityStrip = this.add.image(WIDTH / 2, HEIGHT - 70, TextureKeys.cityIsrael);
     this.cityStrip.setOrigin(0.5, 0);
     this.cityStrip.setDisplaySize(WIDTH, 140);
     this.cityStrip.setDepth(-8);
+    this.cityStrip.setAlpha(0.96);
+
+    this.slingReticleG = this.add.graphics();
+    this.slingReticleG.setDepth(-12);
+    this.refreshSlingEngagementReticle();
 
     this.powerPlantHp = STRATEGIC_ASSET_HP_MAX;
     this.militaryBaseHp = STRATEGIC_ASSET_HP_MAX;
     this.logisticsPenaltyMs = 0;
+    this.refreshRunStatAssetsIntact();
 
     this.buildStrategicAssetsLayer();
 
@@ -250,6 +334,7 @@ export class MainScene extends Phaser.Scene {
       HEIGHT - 56,
       TextureKeys.ironDomeBattery,
     );
+    this.player.setDepth(12);
     this.player.setDisplaySize(88, 66);
     const playerBody = this.player.body as Phaser.Physics.Arcade.Body;
     playerBody.setImmovable(true);
@@ -290,19 +375,17 @@ export class MainScene extends Phaser.Scene {
       scale: { start: 0.55, end: 0 },
       alpha: { start: 1, end: 0 },
       lifespan: 420,
-      tint: [0xff7722, 0xff3333, 0xffaa55],
       blendMode: Phaser.BlendModes.ADD,
       emitting: false,
     });
     this.explosionEmitter.setDepth(100);
 
     this.beamSparkEmitter = this.add.particles(0, 0, TextureKeys.particle, {
-      speed: { min: 90, max: 220 },
+      speed: { min: 120, max: 320 },
       angle: { min: 0, max: 360 },
-      scale: { start: 0.42, end: 0 },
+      scale: { start: 0.55, end: 0 },
       alpha: { start: 1, end: 0 },
-      lifespan: { min: 160, max: 280 },
-      tint: [0xffffff, 0xffee88, 0xffaa33, 0xff6622],
+      lifespan: { min: 120, max: 220 },
       blendMode: Phaser.BlendModes.ADD,
       emitting: false,
     });
@@ -355,11 +438,42 @@ export class MainScene extends Phaser.Scene {
 
     this.pointerDownHandler = (p: Phaser.Input.Pointer) => {
       if (this.gameOver || this.shopOpen) return;
+      if (p.leftButtonDown() && p.rightButtonDown()) return;
       if (p.rightButtonDown()) {
         this.useJoker();
       }
     };
     this.input.on("pointerdown", this.pointerDownHandler);
+
+    this.wheelHandler = (
+      _pointer: Phaser.Input.Pointer,
+      _gameObjects: Phaser.GameObjects.GameObject[],
+      _deltaX: number,
+      deltaY: number,
+      _deltaZ: number,
+    ) => {
+      if (this.gameOver || this.shopOpen) return;
+      if (deltaY < 0) {
+        this.volleySize = (this.volleySize === 4 ? 1 : this.volleySize + 1) as
+          | 1
+          | 2
+          | 3
+          | 4;
+      } else if (deltaY > 0) {
+        this.volleySize = (this.volleySize === 1 ? 4 : this.volleySize - 1) as
+          | 1
+          | 2
+          | 3
+          | 4;
+      } else {
+        return;
+      }
+      void initAudio();
+      playVolleyChange();
+      emitVolleyChanged(this.volleySize);
+      this.emitAmmoState();
+    };
+    this.input.on("wheel", this.wheelHandler);
 
     this.unsubscribeJoker = subscribeRequestUseJoker(() => {
       this.useJoker();
@@ -393,6 +507,9 @@ export class MainScene extends Phaser.Scene {
       if (this.pointerDownHandler) {
         this.input.off("pointerdown", this.pointerDownHandler);
       }
+      if (this.wheelHandler) {
+        this.input.off("wheel", this.wheelHandler);
+      }
       this.reloadTimer?.remove();
       this.reloadTimer = undefined;
       this.reloadHudTimer?.remove();
@@ -406,6 +523,54 @@ export class MainScene extends Phaser.Scene {
       this.unsubscribeShopContinue?.();
       this.unsubscribeShopContinue = undefined;
     });
+  }
+
+  /**
+   * High-res orbital plate: cover-scale and pan so the Eastern Mediterranean sits
+   * in the upper playfield (moon / meteor trail stay visible at top when present in art).
+   */
+  private configureOrbitalBackground(): void {
+    this.bgImage = this.add.image(WIDTH / 2, HEIGHT / 2, TextureKeys.bgIsrael);
+    const frame = this.textures.getFrame(TextureKeys.bgIsrael);
+    const tw = Math.max(1, frame.width);
+    const th = Math.max(1, frame.height);
+    const isProceduralFallback = tw === WIDTH && th === HEIGHT;
+    if (isProceduralFallback) {
+      this.bgImage.setDisplaySize(WIDTH, HEIGHT);
+      this.bgImage.setOrigin(0.5, 0.5);
+      this.bgImage.setPosition(WIDTH / 2, HEIGHT / 2);
+    } else {
+      /** Slight upward bias keeps moon / space band visible inside the canvas (image_15 plate). */
+      const cover = Math.max(WIDTH / tw, HEIGHT / th) * 1.068;
+      this.bgImage.setScale(cover);
+      this.bgImage.setOrigin(0.5, 0.435);
+      this.bgImage.setPosition(WIDTH * 0.515, HEIGHT * 0.485);
+    }
+    this.bgImage.setDepth(-25);
+  }
+
+  /** Vector David's Sling engagement circle over the sea (hidden for other weapons / shop / game over). */
+  private refreshSlingEngagementReticle(): void {
+    const g = this.slingReticleG;
+    if (!g) return;
+    g.clear();
+    if (this.gameOver || this.shopOpen || this.batteryType !== "DAVIDS_SLING") {
+      return;
+    }
+    const cx = WIDTH * 0.5;
+    const cy = HEIGHT * 0.36;
+    const rOuter = 106;
+    const rInner = 72;
+    g.lineStyle(18, 0x40c8ff, 0.08);
+    g.strokeCircle(cx, cy, rOuter);
+    g.lineStyle(14, 0x00a8ff, 0.12);
+    g.strokeCircle(cx, cy, rOuter);
+    g.lineStyle(4, 0x66e8ff, 0.42);
+    g.strokeCircle(cx, cy, rOuter);
+    g.lineStyle(2, 0xccfcff, 0.95);
+    g.strokeCircle(cx, cy, rOuter);
+    g.lineStyle(1, 0xffffff, 0.52);
+    g.strokeCircle(cx, cy, rInner);
   }
 
   private getEffectiveReloadMs(): number {
@@ -456,13 +621,17 @@ export class MainScene extends Phaser.Scene {
     const mb = STRATEGIC_ASSETS.military_base;
     this.add
       .text(pp.centerX, pp.anchorY - 66, pp.displayName, {
-        ...radarTextStyle("9px", "#a8e8ff"),
+        ...radarTextStyle("9px", "#d8fcff"),
+        stroke: "#010810",
+        strokeThickness: 5,
       })
       .setOrigin(0.5)
       .setDepth(5);
     this.add
       .text(mb.centerX, mb.anchorY - 66, mb.displayName, {
-        ...radarTextStyle("9px", "#c8e8b8"),
+        ...radarTextStyle("9px", "#e8ffd8"),
+        stroke: "#061008",
+        strokeThickness: 5,
       })
       .setOrigin(0.5)
       .setDepth(5);
@@ -482,7 +651,9 @@ export class MainScene extends Phaser.Scene {
     g.fillRect(cx - 26, y - 28, 14, 22);
     g.fillRect(cx - 6, y - 32, 14, 26);
     g.fillRect(cx + 14, y - 26, 12, 20);
-    g.lineStyle(2, 0x445566, 0.9);
+    g.lineStyle(6, 0x66eeff, 0.3);
+    g.strokeRect(cx - 32, y - 34, 64, 36);
+    g.lineStyle(2, 0x445566, 0.95);
     g.strokeRect(cx - 32, y - 34, 64, 36);
   }
 
@@ -496,7 +667,9 @@ export class MainScene extends Phaser.Scene {
     g.fillStyle(0x3a4a2a, 1);
     g.fillRect(cx - 28, y - 12, 18, 10);
     g.fillRect(cx + 10, y - 12, 18, 10);
-    g.lineStyle(2, 0x334422, 0.95);
+    g.lineStyle(6, 0x88ffcc, 0.28);
+    g.strokeRect(cx - 36, y - 18, 72, 22);
+    g.lineStyle(2, 0x334422, 0.98);
     g.strokeRect(cx - 36, y - 18, 72, 22);
   }
 
@@ -606,7 +779,10 @@ export class MainScene extends Phaser.Scene {
     }
     this.redrawStrategicHealthBars();
     this.emitStrategicHud();
-    this.loseHeartFromThreat("hvt");
+    this.refreshRunStatAssetsIntact();
+    if (this.powerPlantHp <= 0 && this.militaryBaseHp <= 0) {
+      this.enterGameOver();
+    }
   }
 
   private getMagCapacity(): number {
@@ -619,6 +795,29 @@ export class MainScene extends Phaser.Scene {
     return 1 + this.propulsionLevel * ECONOMY.PROPULSION_BONUS;
   }
 
+  /** Vertical reach & splash radius multiplier from Extended Range upgrade. */
+  private getRangeMult(): number {
+    return 1 + 0.055 * this.extendedRangeLevel;
+  }
+
+  private resolveBreachTargetKey(
+    zone: StrategicAssetKey | null,
+  ): StrategicAssetKey | null {
+    const hpFor = (k: StrategicAssetKey) =>
+      k === "power_plant" ? this.powerPlantHp : this.militaryBaseHp;
+    const tryOrder = (a: StrategicAssetKey, b: StrategicAssetKey) => {
+      if (hpFor(a) > 0) return a;
+      if (hpFor(b) > 0) return b;
+      return null;
+    };
+    if (zone) {
+      const other: StrategicAssetKey =
+        zone === "power_plant" ? "military_base" : "power_plant";
+      return tryOrder(zone, other);
+    }
+    return tryOrder("power_plant", "military_base");
+  }
+
   private emitShopUi(open: boolean): void {
     emitShopPanelUpdated({
       open,
@@ -627,6 +826,10 @@ export class MainScene extends Phaser.Scene {
       rapidReloadLevel: this.rapidReloadLevel,
       extendedMagLevel: this.extendedMagLevel,
       propulsionLevel: this.propulsionLevel,
+      autoTurretLevel: this.autoTurretLevel,
+      debrisSweeperLevel: this.debrisSweeperLevel,
+      extendedRangeLevel: this.extendedRangeLevel,
+      repairCrewsOwned: this.repairCrewsOwned,
       hearts: this.hearts,
       maxHearts: ECONOMY.MAX_HEARTS,
     });
@@ -660,11 +863,14 @@ export class MainScene extends Phaser.Scene {
     this.waveClearDelayTimer = undefined;
     this.waveClearedBanner?.destroy();
     this.waveClearedBanner = undefined;
+    this.waveIntelBanner?.destroy();
+    this.waveIntelBanner = undefined;
   }
 
   private beginPostWaveSequence(): void {
     if (this.gameOver || this.shopOpen) return;
     if (this.postWavePhase !== "none") return;
+    this.checkAchievements();
     this.postWavePhase = "waiting_clear";
     this.waveClearEnterAt = this.time.now;
     this.spawnTimer?.remove();
@@ -681,6 +887,92 @@ export class MainScene extends Phaser.Scene {
 
   private markVisibleEnemySpawnPulse(): void {
     this.lastVisibleEnemySpawnAt = this.time.now;
+  }
+
+  private noteEnemyDestroyedForRunStats(): void {
+    this.runStats.totalEnemiesDestroyed += 1;
+  }
+
+  private refreshRunStatAssetsIntact(): void {
+    let n = 0;
+    if (this.powerPlantHp >= STRATEGIC_ASSET_HP_MAX) n += 1;
+    if (this.militaryBaseHp >= STRATEGIC_ASSET_HP_MAX) n += 1;
+    this.runStats.assetsIntact = n;
+  }
+
+  private resetAchHitStreak(): void {
+    this.runStats.consecutiveHits = 0;
+  }
+
+  /** Counts a successful hit from a projectile (per enemy contact). */
+  private noteProjectileEnemyHit(projectile: Phaser.GameObjects.GameObject): void {
+    (projectile as Phaser.GameObjects.Sprite).setData(
+      PROJECTILE_DATA_KEY.HIT_FOR_ACH_STREAK,
+      true,
+    );
+    this.runStats.consecutiveHits += 1;
+    this.checkAchievements();
+  }
+
+  /** Splash / beam hits (no projectile body). */
+  private noteDirectWeaponHit(): void {
+    this.runStats.consecutiveHits += 1;
+    this.checkAchievements();
+  }
+
+  private checkAchievements(ctx?: {
+    redSwarmClearedNoHeartLoss?: boolean;
+    reachedPowerLevel5?: boolean;
+  }): void {
+    if (this.gameOver) return;
+
+    if (
+      !this.unlockedAchievements.has("SHARPSHOOTER") &&
+      this.runStats.consecutiveHits >= ACH_SHARPSHOOTER_HITS
+    ) {
+      this.grantAchievement("SHARPSHOOTER", "SHARPSHOOTER", 1500);
+    }
+
+    if (
+      ctx?.redSwarmClearedNoHeartLoss &&
+      !this.unlockedAchievements.has("UNTOUCHABLE")
+    ) {
+      this.grantAchievement("UNTOUCHABLE", "UNTOUCHABLE", 2500);
+    }
+
+    if (
+      ctx?.reachedPowerLevel5 &&
+      !this.unlockedAchievements.has("MAXIMUM_OVERDRIVE")
+    ) {
+      this.grantAchievement(
+        "MAXIMUM_OVERDRIVE",
+        "MAXIMUM OVERDRIVE",
+        2000,
+      );
+    }
+  }
+
+  private grantAchievement(
+    id: string,
+    displayName: string,
+    rewardCredits: number,
+  ): void {
+    if (this.unlockedAchievements.has(id) || this.gameOver) return;
+    this.unlockedAchievements.add(id);
+    this.credits += rewardCredits;
+    emitCreditsUpdated(this.credits);
+    void initAudio();
+    playAchievementSound();
+    emitAchievementUnlocked({ id, displayName, rewardCredits });
+  }
+
+  private onRedAlertSwarmCompleted(): void {
+    this.runStats.swarmsCleared += 1;
+    const noHeartLoss =
+      this.heartsWhenRedAlertBegan !== null &&
+      this.hearts === this.heartsWhenRedAlertBegan;
+    this.heartsWhenRedAlertBegan = null;
+    this.checkAchievements({ redSwarmClearedNoHeartLoss: noHeartLoss });
   }
 
   /** Throttled diagnostics while `waiting_clear` is blocked by live enemy entries. */
@@ -732,6 +1024,7 @@ export class MainScene extends Phaser.Scene {
    */
   private updateWaveSpawning(): void {
     if (this.gameOver || this.shopOpen || this.postWavePhase !== "none") return;
+    if (this.activeMegaBoss) return;
 
     if (this.redAlertSwarmActive) {
       if (this.waveKillCount >= this.redAlertTargetKills) {
@@ -753,6 +1046,7 @@ export class MainScene extends Phaser.Scene {
     void initAudio();
     playRadioChatter();
     this.waveClearedBanner?.destroy();
+    this.waveIntelBanner?.destroy();
     const t = this.add.text(WIDTH / 2, HEIGHT * 0.4, "WAVE CLEARED", {
       ...radarTextStyle("32px", "#39ff14"),
       stroke: "#001800",
@@ -763,6 +1057,23 @@ export class MainScene extends Phaser.Scene {
     t.setScrollFactor(0);
     t.setAlpha(0.92);
     this.waveClearedBanner = t;
+    const nextWave = this.currentWave + 1;
+    const intel = this.add.text(
+      WIDTH / 2,
+      HEIGHT * 0.56,
+      `WAVE ${nextWave} INTEL\n${getWaveIntelLine(nextWave)}`,
+      {
+        ...radarTextStyle("14px", "#7fd8ff"),
+        stroke: "#001018",
+        strokeThickness: 4,
+        align: "center",
+      },
+    );
+    intel.setOrigin(0.5);
+    intel.setDepth(209);
+    intel.setScrollFactor(0);
+    intel.setAlpha(0.92);
+    this.waveIntelBanner = intel;
     this.tweens.add({
       targets: t,
       scale: { from: 0.88, to: 1.05 },
@@ -774,6 +1085,8 @@ export class MainScene extends Phaser.Scene {
       this.waveClearDelayTimer = undefined;
       this.waveClearedBanner?.destroy();
       this.waveClearedBanner = undefined;
+      this.waveIntelBanner?.destroy();
+      this.waveIntelBanner = undefined;
       if (this.gameOver || this.shopOpen) return;
       if (this.postWavePhase !== "cleared_cinematic") return;
       this.postWavePhase = "none";
@@ -871,13 +1184,36 @@ export class MainScene extends Phaser.Scene {
     this.currentWave = nextWave;
     emitWaveChanged(this.currentWave);
 
+    if (this.repairCrewsOwned) {
+      if (this.powerPlantHp > 0) {
+        this.powerPlantHp = Math.min(
+          STRATEGIC_ASSET_HP_MAX,
+          this.powerPlantHp + 1,
+        );
+      }
+      if (this.militaryBaseHp > 0) {
+        this.militaryBaseHp = Math.min(
+          STRATEGIC_ASSET_HP_MAX,
+          this.militaryBaseHp + 1,
+        );
+      }
+      this.redrawStrategicHealthBars();
+      this.emitStrategicHud();
+      this.refreshRunStatAssetsIntact();
+    }
+
     const { config, spawnDelayFactor } = this.getEffectiveWaveConfig();
     this.currentSpawnDelayMs = Math.max(
       MIN_SPAWN_DELAY_MS,
       config.spawnDelayMs / spawnDelayFactor,
     );
 
-    if (isRedAlertSwarmWave(this.currentWave)) {
+    if (isBossWave(this.currentWave)) {
+      console.log(
+        `[MainScene] Starting Wave ${this.currentWave} Mega-Boss encounter`,
+      );
+      this.startBossEncounter();
+    } else if (isRedAlertSwarmWave(this.currentWave)) {
       console.log(
         `[MainScene] Starting Wave ${this.currentWave} Red Alert Swarm (milestone; not WAVE_CONFIGS.swarm)`,
       );
@@ -935,7 +1271,7 @@ export class MainScene extends Phaser.Scene {
   }
 
   /**
-   * Wave 3+ use `restartSpawnTimer` (looping). Milestone waves 5/10/… use `beginRedAlertSwarm` instead.
+   * Wave 3+ use `restartSpawnTimer` (looping). Boss waves (10,20,…) and red-alert swarms (5,15,…) bypass it.
    * If the clock/physics were stuck, the timer may never arm — recover after 2s.
    */
   private scheduleWaveSpawnSafetyKick(): void {
@@ -944,6 +1280,24 @@ export class MainScene extends Phaser.Scene {
     this.waveSpawnSafetyTimer = this.time.delayedCall(2000, () => {
       this.waveSpawnSafetyTimer = undefined;
       if (this.gameOver || this.shopOpen || this.currentWave !== waveToken) {
+        return;
+      }
+
+      if (isBossWave(this.currentWave)) {
+        const hasBoss = this.enemies
+          .getChildren()
+          .some(
+            (c) =>
+              c instanceof MegaBossEnemy &&
+              (c as MegaBossEnemy).active &&
+              !this.bossDefeatInProgress,
+          );
+        if (!hasBoss) {
+          console.warn(
+            `[MainScene] Spawn safety: missing mega-boss on wave ${this.currentWave} — respawning`,
+          );
+          this.startBossEncounter();
+        }
         return;
       }
 
@@ -1002,10 +1356,34 @@ export class MainScene extends Phaser.Scene {
       this.hearts += 1;
       emitCityHit(this.hearts);
       bought = true;
+    } else if (id === "auto_turret") {
+      if (this.autoTurretLevel >= ECONOMY.AUTO_TURRET_MAX) return;
+      if (this.credits < ECONOMY.AUTO_TURRET_COST) return;
+      this.credits -= ECONOMY.AUTO_TURRET_COST;
+      this.autoTurretLevel += 1;
+      bought = true;
+    } else if (id === "debris_sweeper") {
+      if (this.debrisSweeperLevel >= ECONOMY.DEBRIS_SWEEPER_MAX) return;
+      if (this.credits < ECONOMY.DEBRIS_SWEEPER_COST) return;
+      this.credits -= ECONOMY.DEBRIS_SWEEPER_COST;
+      this.debrisSweeperLevel += 1;
+      bought = true;
+    } else if (id === "extended_range") {
+      if (this.extendedRangeLevel >= ECONOMY.EXTENDED_RANGE_MAX) return;
+      if (this.credits < ECONOMY.EXTENDED_RANGE_COST) return;
+      this.credits -= ECONOMY.EXTENDED_RANGE_COST;
+      this.extendedRangeLevel += 1;
+      bought = true;
+    } else if (id === "repair_crews") {
+      if (this.repairCrewsOwned) return;
+      if (this.credits < ECONOMY.REPAIR_CREWS_COST) return;
+      this.credits -= ECONOMY.REPAIR_CREWS_COST;
+      this.repairCrewsOwned = true;
+      bought = true;
     }
     if (bought) {
       void initAudio();
-      playRadioChatter();
+      playPurchaseChime();
       emitCreditsUpdated(this.credits);
       this.emitShopUi(true);
     }
@@ -1044,6 +1422,7 @@ export class MainScene extends Phaser.Scene {
   private killCreditKind(enemy: BaseEnemy): "ballistic" | "uav" | "rocket" {
     if (enemy instanceof BallisticEnemy) return "ballistic";
     if (enemy instanceof UAVEnemy) return "uav";
+    if (enemy instanceof MegaBossEnemy) return "uav";
     return "rocket";
   }
 
@@ -1062,8 +1441,36 @@ export class MainScene extends Phaser.Scene {
       this.lastBlackoutStaticRedraw = this.time.now;
       this.redrawBlackoutStaticNoise();
     }
+    this.refreshSlingEngagementReticle();
     if (this.shopOpen) {
       return;
+    }
+
+    if (this.postWavePhase === "none") {
+      this.passiveCreditMsAccum += this.game.loop.delta;
+      while (this.passiveCreditMsAccum >= 1000) {
+        this.passiveCreditMsAccum -= 1000;
+        this.credits += ECONOMY.PASSIVE_CREDITS_PER_SECOND;
+        emitCreditsUpdated(this.credits);
+      }
+    } else {
+      this.passiveCreditMsAccum = 0;
+    }
+
+    const now = this.time.now;
+    if (this.autoTurretLevel > 0) {
+      const iv = Math.max(900, 5000 - 400 * this.autoTurretLevel);
+      if (now - this.lastAutoTurretAt >= iv) {
+        this.lastAutoTurretAt = now;
+        this.fireAutoTurretShot();
+      }
+    }
+    if (this.debrisSweeperLevel > 0) {
+      const iv = Math.max(500, 4000 - 300 * this.debrisSweeperLevel);
+      if (now - this.lastDebrisSweepAt >= iv) {
+        this.lastDebrisSweepAt = now;
+        this.tickDebrisSweeper();
+      }
     }
 
     if (!isAudioMuted() && getAudioContext()?.state === "running") {
@@ -1088,11 +1495,18 @@ export class MainScene extends Phaser.Scene {
       WIDTH - PLAYER_HALF_W,
     );
 
+    const dualPress =
+      pointer.leftButtonDown() && pointer.rightButtonDown();
+    if (dualPress && !this.wasDualMousePressing && !this.isReloading) {
+      this.startReload(true);
+    }
+    this.wasDualMousePressing = dualPress;
+
     if (pointer.isDown) {
-      this.tryFireProjectiles();
+      this.tryFireProjectiles("mouse");
     }
     if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) {
-      this.tryFireProjectiles();
+      this.tryFireProjectiles("keyboard");
     }
     if (Phaser.Input.Keyboard.JustDown(this.bKey)) {
       this.useJoker();
@@ -1124,6 +1538,9 @@ export class MainScene extends Phaser.Scene {
         proj.x > WIDTH + PROJECTILE_OOB_PAD_X;
       const oobY = proj.y < topBound || proj.y > HEIGHT + 120;
       if (oobX || oobY) {
+        if (!proj.getData(PROJECTILE_DATA_KEY.HIT_FOR_ACH_STREAK)) {
+          this.resetAchHitStreak();
+        }
         proj.destroy();
       }
       return true;
@@ -1258,6 +1675,91 @@ export class MainScene extends Phaser.Scene {
     });
   }
 
+  /** Short world-space line that fades out (auto-turret / sweeper FX). */
+  private drawBriefTracer(
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    color: number,
+    durationMs: number,
+    lineWidth = 2,
+  ): void {
+    const g = this.add.graphics();
+    g.setDepth(199);
+    g.setScrollFactor(1);
+    g.lineStyle(lineWidth, color, 0.92);
+    g.lineBetween(x0, y0, x1, y1);
+    g.setAlpha(1);
+    this.tweens.add({
+      targets: g,
+      alpha: 0,
+      duration: durationMs,
+      ease: "Sine.easeIn",
+      onComplete: () => {
+        g.destroy();
+      },
+    });
+  }
+
+  /** Large weapon power banner: scales up slightly, drifts up, fades over 1.5s. */
+  private showWeaponLevelUpBanner(
+    batteryType: BatteryType,
+    level: number,
+  ): void {
+    const name = BATTERY_DISPLAY_NAME[batteryType];
+    const hex = WEAPON_VFX_COLOR_HEX[batteryType];
+    const msg = `${name} UPGRADE: LVL ${level}!`;
+    const y0 = this.player.y - 80;
+    const t = this.add.text(this.player.x, y0, msg, {
+      ...radarTextStyle("21px", hex),
+      stroke: "#0a0000",
+      strokeThickness: 6,
+      fontStyle: "bold",
+    });
+    t.setOrigin(0.5);
+    t.setDepth(205);
+    t.setScrollFactor(1);
+    t.setScale(0.78);
+    this.tweens.add({
+      targets: t,
+      scale: 1.06,
+      duration: 240,
+      ease: "Back.easeOut",
+    });
+    this.tweens.add({
+      targets: t,
+      y: y0 - 72,
+      alpha: 0,
+      duration: 1500,
+      ease: "Sine.easeOut",
+      onComplete: () => t.destroy(),
+    });
+  }
+
+  private showWeaponMaxPowerBanner(batteryType: BatteryType): void {
+    const hex = WEAPON_VFX_COLOR_HEX[batteryType];
+    const y0 = HEIGHT * 0.36;
+    const t = this.add.text(WIDTH / 2, y0, "MAX POWER!", {
+      ...radarTextStyle("24px", hex),
+      stroke: "#0a0000",
+      strokeThickness: 6,
+      fontStyle: "bold",
+    });
+    t.setOrigin(0.5);
+    t.setDepth(205);
+    t.setScrollFactor(0);
+    this.tweens.add({
+      targets: t,
+      y: y0 - 64,
+      alpha: 0,
+      scale: { from: 1, to: 1.08 },
+      duration: 1500,
+      ease: "Sine.easeOut",
+      onComplete: () => t.destroy(),
+    });
+  }
+
   private getReloadProgress(): number {
     if (!this.isReloading) return 0;
     const dur = this.getEffectiveReloadMs();
@@ -1269,11 +1771,14 @@ export class MainScene extends Phaser.Scene {
   }
 
   private emitAmmoState(): void {
+    const plan = this.computeFirePlan();
     emitAmmoUpdated({
       currentAmmo: this.currentAmmo,
       maxAmmo: this.maxAmmo,
       isReloading: this.isReloading,
       reloadProgress: this.isReloading ? this.getReloadProgress() : undefined,
+      volleySize: this.volleySize,
+      nextSalvoCredits: plan.creditsTotal,
     });
   }
 
@@ -1291,8 +1796,12 @@ export class MainScene extends Phaser.Scene {
     this.reloadRing.strokePath();
   }
 
-  private startReload(): void {
+  private startReload(manualGesture = false): void {
     if (this.isReloading) return;
+    if (manualGesture) {
+      void initAudio();
+      playManualReload();
+    }
     this.isReloading = true;
     this.reloadStartTime = this.time.now;
     this.reloadHudTimer?.remove();
@@ -1319,6 +1828,7 @@ export class MainScene extends Phaser.Scene {
   private feedbackDryFire(reason: "empty" | "reloading"): void {
     if (this.time.now - this.lastDryFireAt < 220) return;
     this.lastDryFireAt = this.time.now;
+    this.resetAchHitStreak();
     void initAudio();
     playDryFireClick();
     if (reason === "empty") {
@@ -1331,22 +1841,56 @@ export class MainScene extends Phaser.Scene {
     }
   }
 
+  /** Fire attempt with no credits — pointer position for mouse, launcher aim for keyboard. */
+  private feedbackBankruptFireAttempt(
+    source: "mouse" | "keyboard",
+  ): void {
+    if (this.time.now - this.lastDryFireAt < 220) return;
+    this.lastDryFireAt = this.time.now;
+    this.resetAchHitStreak();
+    void initAudio();
+    playErrorBuzzer();
+    const ptr = this.input.activePointer;
+    const wx =
+      source === "mouse" && ptr.isDown ? ptr.x : this.player.x;
+    const wy =
+      source === "mouse" && ptr.isDown ? ptr.y : this.player.y - 52;
+    this.showFloatingText(wx, wy, "BANKRUPT!", "#ff2222");
+  }
+
   private emitWeaponHud(): void {
     emitWeaponUpgraded({
       batteryName: BATTERY_DISPLAY_NAME[this.batteryType],
       batteryType: this.batteryType,
       powerLevel: this.weaponPowerLevel,
     });
+    this.refreshSlingEngagementReticle();
   }
 
-  /** Colored crate: same color → +power level; different color → switch weapon, keep level */
-  private applyPowerUpFromKind(kind: PowerUpKind): void {
+  /**
+   * Colored crate: same color → +power level; different color → switch weapon, keep level.
+   * `wasAlreadyMax` is true when same-weapon pickup does not increase level (already at cap).
+   */
+  private applyPowerUpFromKind(kind: PowerUpKind): {
+    sameWeapon: boolean;
+    powerLeveledUp: boolean;
+    wasAlreadyMax: boolean;
+  } {
     const mapped = POWER_UP_TO_BATTERY[kind];
-    if (this.batteryType === mapped) {
-      this.weaponPowerLevel = Math.min(
-        MAX_WEAPON_POWER_LEVEL,
-        this.weaponPowerLevel + 1,
-      );
+    const sameWeapon = this.batteryType === mapped;
+    let powerLeveledUp = false;
+    let wasAlreadyMax = false;
+
+    if (sameWeapon) {
+      wasAlreadyMax = this.weaponPowerLevel >= MAX_WEAPON_POWER_LEVEL;
+      if (!wasAlreadyMax) {
+        const prev = this.weaponPowerLevel;
+        this.weaponPowerLevel = Math.min(
+          MAX_WEAPON_POWER_LEVEL,
+          this.weaponPowerLevel + 1,
+        );
+        powerLeveledUp = this.weaponPowerLevel > prev;
+      }
     } else {
       this.reloadTimer?.remove();
       this.reloadTimer = undefined;
@@ -1360,7 +1904,12 @@ export class MainScene extends Phaser.Scene {
       this.currentAmmo = this.maxAmmo;
       this.emitAmmoState();
     }
-    this.emitWeaponHud();
+
+    if (!sameWeapon || !wasAlreadyMax) {
+      this.emitWeaponHud();
+    }
+
+    return { sameWeapon, powerLeveledUp, wasAlreadyMax };
   }
 
   private getEffectiveWaveConfig(): {
@@ -1431,11 +1980,19 @@ export class MainScene extends Phaser.Scene {
 
     debris.destroy();
     this.cameras.main.shake(140, 0.004);
-    this.loseHeartFromThreat("debris");
+    this.loseHeartFromDebrisHit();
   }
 
-  private triggerExplosion(x: number, y: number): void {
+  private triggerExplosion(
+    x: number,
+    y: number,
+    killWeapon?: BatteryType,
+  ): void {
     playExplosion();
+    const tint = killWeapon
+      ? WEAPON_EXPLOSION_TINT[killWeapon]
+      : DEFAULT_EXPLOSION_TINT;
+    this.explosionEmitter.setParticleTint(tint);
     this.explosionEmitter.explode(28, x, y);
   }
 
@@ -1450,6 +2007,7 @@ export class MainScene extends Phaser.Scene {
       finalWave: this.currentWave,
       strategicAssetsIntact,
       wavesCleared,
+      totalEnemiesDestroyed: this.runStats.totalEnemiesDestroyed,
     });
     stopTacticalDrone();
     this.jokerKillCharge = 0;
@@ -1465,6 +2023,10 @@ export class MainScene extends Phaser.Scene {
     this.rapidReloadLevel = 0;
     this.extendedMagLevel = 0;
     this.propulsionLevel = 0;
+    this.autoTurretLevel = 0;
+    this.debrisSweeperLevel = 0;
+    this.extendedRangeLevel = 0;
+    this.repairCrewsOwned = false;
     this.powerPlantHp = 0;
     this.militaryBaseHp = 0;
     this.logisticsPenaltyMs = 0;
@@ -1478,6 +2040,7 @@ export class MainScene extends Phaser.Scene {
       logisticsDamaged: false,
     });
     emitCreditsUpdated(0);
+    emitBossEncounterUpdated({ active: false });
     this.emitShopUi(false);
     this.reloadTimer?.remove();
     this.reloadTimer = undefined;
@@ -1537,19 +2100,20 @@ export class MainScene extends Phaser.Scene {
   private onEnemyReachedBottom(enemy: BaseEnemy): void {
     const x = enemy.x;
     const y = enemy.y;
-    this.triggerExplosion(x, y);
     if (enemy instanceof RocketEnemy) {
       this.burstCityDust(x);
     }
-    if (enemy instanceof UAVEnemy) {
-      this.spawnDebrisBurst(x, y);
-      this.spawnDebrisBurst(x, y);
+    const key = this.resolveBreachTargetKey(getStrategicAssetKeyAtWorldX(x));
+    if (!key) {
+      this.triggerExplosion(x, y);
+      enemy.destroy();
+      this.enterGameOver();
+      return;
     }
-    enemy.destroy();
-    this.loseHeartFromThreat("city");
+    this.applyStrategicAssetStrike(key, enemy);
   }
 
-  private loseHeartFromThreat(_source: "city" | "hvt" | "debris"): void {
+  private loseHeartFromDebrisHit(): void {
     if (this.gameOver) return;
     this.hearts = Math.max(0, this.hearts - 1);
     emitCityHit(this.hearts);
@@ -1599,7 +2163,12 @@ export class MainScene extends Phaser.Scene {
       "BREACH — SAME WAVE",
       "#ff4444",
     );
-    if (isRedAlertSwarmWave(this.currentWave)) {
+    if (isBossWave(this.currentWave)) {
+      this.time.delayedCall(800, () => {
+        if (this.gameOver) return;
+        this.startBossEncounter();
+      });
+    } else if (isRedAlertSwarmWave(this.currentWave)) {
       this.time.delayedCall(800, () => {
         if (this.gameOver) return;
         this.beginRedAlertSwarm();
@@ -1618,6 +2187,7 @@ export class MainScene extends Phaser.Scene {
 
     const spr = this.physics.add.sprite(x, y, TextureKeys.missileTamir);
     spr.setDisplaySize(10, 30);
+    spr.setDepth(14);
     this.projectiles.add(spr);
     const body = spr.body as Phaser.Physics.Arcade.Body;
     body.setAllowGravity(false);
@@ -1638,6 +2208,7 @@ export class MainScene extends Phaser.Scene {
 
     const spr = this.physics.add.sprite(x, y, TextureKeys.missileStunner);
     spr.setDisplaySize(9, 22);
+    spr.setDepth(14);
     this.projectiles.add(spr);
     const body = spr.body as Phaser.Physics.Arcade.Body;
     body.setAllowGravity(false);
@@ -1661,6 +2232,7 @@ export class MainScene extends Phaser.Scene {
 
     const spr = this.physics.add.sprite(x, y, TextureKeys.missileArrow);
     spr.setDisplaySize(14, 40);
+    spr.setDepth(14);
     this.projectiles.add(spr);
     const body = spr.body as Phaser.Physics.Arcade.Body;
     body.setAllowGravity(false);
@@ -1684,25 +2256,61 @@ export class MainScene extends Phaser.Scene {
     return Math.max(32, Math.floor(base * mult));
   }
 
-  private tryFireProjectiles(): void {
+  private getIronDomeSalvoCap(): number {
+    return Phaser.Math.Clamp(
+      2 + Math.floor((this.weaponPowerLevel - 1) / 2),
+      2,
+      4,
+    );
+  }
+
+  private getSlingSalvoCap(): number {
+    return Math.min(2 + Math.floor(this.weaponPowerLevel / 2), 5);
+  }
+
+  /** Planned shots & credit cost for the next click (HUD + firing gate). */
+  private computeFirePlan(): { shots: number; creditsTotal: number } {
+    const cps = INTERCEPTOR_CREDITS_PER_SHOT[this.batteryType];
+    if (this.batteryType === "IRON_BEAM" || this.batteryType === "ARROW") {
+      const ok = this.currentAmmo >= 1 ? 1 : 0;
+      return { shots: ok, creditsTotal: ok * cps };
+    }
+    if (this.batteryType === "IRON_DOME") {
+      const cap = this.getIronDomeSalvoCap();
+      const n = Math.min(this.volleySize, cap, this.currentAmmo);
+      return { shots: n, creditsTotal: n * cps };
+    }
+    const cap = this.getSlingSalvoCap();
+    const n = Math.min(this.volleySize, cap, this.currentAmmo);
+    return { shots: n, creditsTotal: n * cps };
+  }
+
+  private tryFireProjectiles(source: "mouse" | "keyboard"): void {
     if (this.gameOver) return;
     if (this.isReloading) {
       this.feedbackDryFire("reloading");
       return;
     }
-    if (this.currentAmmo <= 0) {
+    const plan = this.computeFirePlan();
+    if (plan.shots <= 0) {
       this.feedbackDryFire("empty");
+      return;
+    }
+    if (this.credits < plan.creditsTotal) {
+      this.feedbackBankruptFireAttempt(source);
       return;
     }
     const cooldown = this.getEffectiveWeaponCooldownMs();
     if (this.time.now - this.lastFiredTime < cooldown) return;
     this.lastFiredTime = this.time.now;
+    this.credits -= plan.creditsTotal;
+    emitCreditsUpdated(this.credits);
     void initAudio();
     playShoot();
     if (this.batteryType === "IRON_BEAM") {
       this.fireIronBeamColumn();
     } else {
-      this.spawnWeaponVolley();
+      this.spawnWeaponVolley(plan.shots);
     }
   }
 
@@ -1716,47 +2324,78 @@ export class MainScene extends Phaser.Scene {
 
     const px = this.player.x;
     const py = this.player.y - this.player.displayHeight * 0.36;
-    const halfW = 22 + this.weaponPowerLevel * 14;
+    const rm = this.getRangeMult();
+    const halfW = (22 + this.weaponPowerLevel * 14) * rm;
     const dmg = 1 + Math.floor(this.weaponPowerLevel / 2);
     const list = [...this.enemies.getChildren()] as BaseEnemy[];
     const impacts: { x: number; y: number }[] = [];
+    let beamDestroyedAny = false;
+    const reachBelow = 30 * rm;
 
     for (const enemy of list) {
       if (!enemy.active) continue;
       if (Math.abs(enemy.x - px) > halfW) continue;
-      if (enemy.y > py + 30) continue;
+      if (enemy.y > py + reachBelow) continue;
       const ex = enemy.x;
       const ey = enemy.y;
+      impacts.push({ x: ex, y: ey });
+      if (enemy instanceof MegaBossEnemy) {
+        const killed = enemy.takeDamage(dmg);
+        this.noteDirectWeaponHit();
+        if (killed) {
+          beamDestroyedAny = true;
+          this.beginBossDefeatSequence(enemy);
+        } else {
+          this.emitBossHudFrom(enemy);
+        }
+        continue;
+      }
       const points = enemy.scoreValue;
       const spawnsDebris = enemy.spawnsDebrisOnKill;
       const wasBallistic = enemy instanceof BallisticEnemy;
       const ck = this.killCreditKind(enemy);
-      impacts.push({ x: ex, y: ey });
       const killed = enemy.takeDamage(dmg);
+      this.noteDirectWeaponHit();
       if (killed) {
-        this.onEnemyKilledCore(ex, ey, points, spawnsDebris, wasBallistic, ck);
+        beamDestroyedAny = true;
+        this.onEnemyKilledCore(
+          ex,
+          ey,
+          points,
+          spawnsDebris,
+          wasBallistic,
+          ck,
+          "IRON_BEAM",
+        );
       }
     }
 
-    for (const p of impacts) {
-      this.beamSparkEmitter.explode(10, p.x, p.y);
+    if (impacts.length === 0) {
+      this.resetAchHitStreak();
     }
 
     const yGround = HEIGHT - 2;
     const yTip = py + 12;
-    const baseThick = 5 + Math.min(8, this.weaponPowerLevel);
+    const flarePoints =
+      impacts.length > 0 ? impacts : [{ x: px, y: yTip }];
+    this.beamSparkEmitter.setParticleTint([0xff0000, 0xff4444, 0xff8888]);
+    for (const p of flarePoints) {
+      this.beamSparkEmitter.explode(22, p.x, p.y);
+    }
+
+    const baseThick = 8 + Math.min(10, this.weaponPowerLevel * 2);
     const beamGfx = this.add.graphics();
     beamGfx.setDepth(97);
     beamGfx.setScrollFactor(0);
 
     const drawBeam = (w: number) => {
       beamGfx.clear();
-      const outer = Math.max(2, w + 3);
-      beamGfx.lineStyle(outer, 0x660000, 0.35);
+      const glowR = Math.max(6, w + 10);
+      beamGfx.lineStyle(glowR, 0xff0000, 0.28);
       beamGfx.lineBetween(px, yGround, px, yTip);
-      beamGfx.lineStyle(Math.max(1, w), 0xff2020, 0.98);
+      beamGfx.lineStyle(Math.max(3, w), 0xff0000, 0.92);
       beamGfx.lineBetween(px, yGround, px, yTip);
-      beamGfx.lineStyle(Math.max(1, Math.floor(w * 0.4)), 0xffcccc, 0.65);
+      beamGfx.lineStyle(Math.max(2, Math.floor(w * 0.38)), 0xff5555, 0.72);
       beamGfx.lineBetween(px, yGround, px, yTip);
     };
 
@@ -1772,19 +2411,22 @@ export class MainScene extends Phaser.Scene {
       beamGfx.destroy();
     });
 
+    if (beamDestroyedAny) {
+      this.cameras.main.shake(IRON_BEAM_SHAKE_MS, IRON_BEAM_SHAKE_INTENSITY);
+    }
+
     if (this.currentAmmo === 0) {
       this.startReload();
     }
   }
 
-  private spawnWeaponVolley(): void {
+  private spawnWeaponVolley(salvoShots: number): void {
     const px = this.player.x;
     const py = this.player.y - this.player.displayHeight * 0.36;
     const t = this.batteryType;
-    const lv = this.weaponPowerLevel;
+    const want = Math.max(0, salvoShots);
 
     if (t === "IRON_DOME") {
-      const want = Phaser.Math.Clamp(2 + Math.floor((lv - 1) / 2), 2, 4);
       const spread = want <= 2 ? 10 : want === 3 ? 14 : 18;
       for (let i = 0; i < want; i++) {
         if (this.currentAmmo <= 0) break;
@@ -1793,14 +2435,13 @@ export class MainScene extends Phaser.Scene {
         this.spawnIronProjectile(px + tOff, py, 0);
       }
     } else if (t === "DAVIDS_SLING") {
-      const volley = Math.min(2 + Math.floor(lv / 2), 5);
-      for (let i = 0; i < volley; i++) {
+      for (let i = 0; i < want; i++) {
         if (this.currentAmmo <= 0) break;
         const dx = Phaser.Math.Between(-6, 6);
         const vx = Phaser.Math.Between(-52, 52);
         this.spawnSlingProjectile(px + dx, py, vx);
       }
-    } else if (t === "ARROW" && this.currentAmmo >= 1) {
+    } else if (t === "ARROW" && want >= 1 && this.currentAmmo >= 1) {
       this.spawnArrowProjectile(px, py, 1);
     }
 
@@ -1814,7 +2455,7 @@ export class MainScene extends Phaser.Scene {
     cy: number,
     exclude: BaseEnemy | null,
   ): void {
-    const r = 92 + this.weaponPowerLevel * 22;
+    const r = (92 + this.weaponPowerLevel * 22) * this.getRangeMult();
     const list = [...this.enemies.getChildren()] as BaseEnemy[];
     for (const e of list) {
       if (!e.active || e === exclude) continue;
@@ -1825,8 +2466,24 @@ export class MainScene extends Phaser.Scene {
       const spawnsDebris = e.spawnsDebrisOnKill;
       const wasBallistic = e instanceof BallisticEnemy;
       const ck = this.killCreditKind(e);
-      if (e.takeDamage(1)) {
-        this.onEnemyKilledCore(ex, ey, points, spawnsDebris, wasBallistic, ck);
+      const splashed = e.takeDamage(1);
+      this.noteDirectWeaponHit();
+      if (splashed) {
+        if (e instanceof MegaBossEnemy) {
+          this.beginBossDefeatSequence(e);
+        } else {
+          this.onEnemyKilledCore(
+            ex,
+            ey,
+            points,
+            spawnsDebris,
+            wasBallistic,
+            ck,
+            "DAVIDS_SLING",
+          );
+        }
+      } else if (e instanceof MegaBossEnemy) {
+        this.emitBossHudFrom(e);
       }
     }
   }
@@ -1838,8 +2495,10 @@ export class MainScene extends Phaser.Scene {
     spawnsDebris: boolean,
     wasBallistic: boolean,
     creditKind: "ballistic" | "uav" | "rocket",
+    killWeapon?: BatteryType,
   ): void {
-    this.triggerExplosion(ex, ey);
+    this.noteEnemyDestroyedForRunStats();
+    this.triggerExplosion(ex, ey, killWeapon);
     if (spawnsDebris) {
       this.spawnDebrisBurst(ex, ey);
     }
@@ -1852,6 +2511,7 @@ export class MainScene extends Phaser.Scene {
       if (this.waveKillCount >= this.redAlertTargetKills) {
         this.waveKillCount = 0;
         this.redAlertSwarmActive = false;
+        this.onRedAlertSwarmCompleted();
         this.beginPostWaveSequence();
       }
     } else {
@@ -1915,33 +2575,47 @@ export class MainScene extends Phaser.Scene {
     const kind = powerUp.powerUpKind;
     const mapped = POWER_UP_TO_BATTERY[kind];
     const wasSameWeapon = this.batteryType === mapped;
+    const wasAlreadyMaxBefore =
+      wasSameWeapon && this.weaponPowerLevel >= MAX_WEAPON_POWER_LEVEL;
     const color = POWER_UP_DISPLAY_COLOR[kind];
 
     powerUp.destroy();
     void initAudio();
-    if (wasSameWeapon) {
+    if (wasAlreadyMaxBefore) {
+      playPowerUp();
+    } else if (wasSameWeapon) {
       playPowerUpLevelUp();
     } else {
       playPowerUp();
     }
 
-    this.applyPowerUpFromKind(kind);
+    const result = this.applyPowerUpFromKind(kind);
     this.flashPlayerUpgrade();
 
-    if (wasSameWeapon) {
-      this.showFloatingText(
-        this.player.x,
-        this.player.y - 52,
-        `POWER LEVEL ${this.weaponPowerLevel}`,
-        color,
-      );
-    } else {
+    if (result.wasAlreadyMax && result.sameWeapon) {
+      this.credits += MAX_POWER_CREDIT_BONUS;
+      emitCreditsUpdated(this.credits);
+      this.showWeaponMaxPowerBanner(mapped);
+      return;
+    }
+
+    if (result.powerLeveledUp) {
+      this.showWeaponLevelUpBanner(mapped, this.weaponPowerLevel);
+    } else if (!result.sameWeapon) {
       this.showFloatingText(
         this.player.x,
         this.player.y - 52,
         `${BATTERY_DISPLAY_NAME[this.batteryType]} · PWR ${this.weaponPowerLevel}`,
         color,
       );
+    }
+
+    if (
+      this.weaponPowerLevel >= MAX_WEAPON_POWER_LEVEL &&
+      (result.powerLeveledUp ||
+        (!result.sameWeapon && !result.wasAlreadyMax))
+    ) {
+      this.checkAchievements({ reachedPowerLevel5: true });
     }
   }
 
@@ -1991,6 +2665,147 @@ export class MainScene extends Phaser.Scene {
     this.markVisibleEnemySpawnPulse();
   }
 
+  private emitBossHudFrom(boss: MegaBossEnemy): void {
+    emitBossEncounterUpdated({
+      active: true,
+      currentHp: boss.getBossHp(),
+      maxHp: boss.bossMaxHp,
+    });
+  }
+
+  private purgeNonBossEnemies(countTowardRunKills = false): void {
+    const list = [...this.enemies.getChildren()] as BaseEnemy[];
+    for (const e of list) {
+      if (!e?.active) continue;
+      if (e instanceof MegaBossEnemy) continue;
+      if (countTowardRunKills) {
+        this.noteEnemyDestroyedForRunStats();
+      }
+      e.destroy();
+    }
+  }
+
+  private spawnBossRocketPair(x: number, y: number): void {
+    const { enemySpeedScale } = this.getEffectiveWaveConfig();
+    const spread = 46;
+    for (const dx of [-spread * 0.5, spread * 0.5]) {
+      const r = new RocketEnemy(this, x + dx, y, enemySpeedScale * 1.02);
+      this.enemies.add(r);
+    }
+    this.markVisibleEnemySpawnPulse();
+  }
+
+  private spawnBossRewardCrate(x: number, y: number): void {
+    const pu = new PowerUp(this, x, y, randomPowerUpKind());
+    this.powerUps.add(pu);
+    const powerBody = pu.body as Phaser.Physics.Arcade.Body;
+    if (powerBody) {
+      powerBody.setVelocity(Phaser.Math.Between(-36, 36), 150);
+    }
+  }
+
+  private startBossEncounter(): void {
+    if (this.gameOver || this.shopOpen) return;
+    this.spawnTimer?.remove();
+    this.spawnTimer = undefined;
+    this.bossDefeatInProgress = false;
+    for (const c of [...this.enemies.getChildren()]) {
+      if (c instanceof MegaBossEnemy) {
+        (c as MegaBossEnemy).destroy();
+      }
+    }
+    this.activeMegaBoss = null;
+
+    const { enemySpeedScale } = this.getEffectiveWaveConfig();
+    void initAudio();
+    playRedAlertSiren();
+    this.cameras.main.flash(420, 255, 40, 35);
+    this.time.delayedCall(120, () => {
+      if (this.gameOver || this.shopOpen) return;
+      this.cameras.main.flash(360, 255, 60, 50);
+    });
+
+    const warn = this.add.text(
+      WIDTH / 2,
+      HEIGHT * 0.22,
+      "WARNING: HEAVY THREAT DETECTED",
+      {
+        ...radarTextStyle("20px", "#ff2222"),
+        stroke: "#1a0000",
+        strokeThickness: 8,
+        fontStyle: "bold",
+        align: "center",
+      },
+    );
+    warn.setOrigin(0.5);
+    warn.setDepth(220);
+    warn.setScrollFactor(0);
+    warn.setScale(0.82);
+    this.tweens.add({
+      targets: warn,
+      scale: 1.14,
+      duration: 400,
+      ease: "Elastic.easeOut",
+    });
+    this.tweens.add({
+      targets: warn,
+      alpha: 0,
+      duration: 2800,
+      delay: 2400,
+      onComplete: () => warn.destroy(),
+    });
+
+    const boss = new MegaBossEnemy(
+      this,
+      WIDTH / 2,
+      92,
+      this.currentWave,
+      enemySpeedScale,
+      (bx, by) => this.spawnBossRocketPair(bx, by),
+    );
+    this.enemies.add(boss);
+    this.activeMegaBoss = boss;
+    this.emitBossHudFrom(boss);
+    this.markVisibleEnemySpawnPulse();
+  }
+
+  private beginBossDefeatSequence(boss: MegaBossEnemy): void {
+    if (this.bossDefeatInProgress || !boss.active) return;
+    this.bossDefeatInProgress = true;
+    if (this.activeMegaBoss === boss) this.activeMegaBoss = null;
+    boss.stopBossBehaviors();
+    emitBossEncounterUpdated({ active: false });
+
+    const bx = boss.x;
+    const by = boss.y;
+    this.purgeNonBossEnemies(true);
+
+    const pops = Phaser.Math.Between(5, 8);
+    for (let i = 0; i < pops; i++) {
+      const t = pops <= 1 ? 0 : (i / (pops - 1)) * BOSS_DEFEAT_CHAIN_MS;
+      this.time.delayedCall(t, () => {
+        if (this.gameOver) return;
+        const ox = bx + Phaser.Math.Between(-72, 72);
+        const oy = by + Phaser.Math.Between(-48, 48);
+        this.triggerExplosion(ox, oy, "IRON_BEAM");
+      });
+    }
+
+    this.time.delayedCall(BOSS_DEFEAT_CHAIN_MS + 90, () => {
+      if (this.gameOver) return;
+      this.noteEnemyDestroyedForRunStats();
+      boss.destroy();
+      this.bossDefeatInProgress = false;
+      emitBossEncounterUpdated({ active: false });
+      this.credits += MEGA_BOSS_BOUNTY_CREDITS;
+      emitCreditsUpdated(this.credits);
+      this.addScore(MEGA_BOSS_SCORE_BONUS);
+      this.spawnBossRewardCrate(bx - 52, by);
+      this.spawnBossRewardCrate(bx + 52, by);
+      this.beginPostWaveSequence();
+    });
+  }
+
   /** Re-arms the looping spawn clock after shop close or wave restart (not used on red-alert milestone waves). */
   private restartSpawnTimer(): void {
     this.spawnTimer?.remove();
@@ -2007,6 +2822,7 @@ export class MainScene extends Phaser.Scene {
     this.spawnTimer = undefined;
     this.redAlertSwarmActive = true;
     this.waveKillCount = 0;
+    this.heartsWhenRedAlertBegan = this.hearts;
     const n = Phaser.Math.Between(30, 40);
     this.redAlertTargetKills = n;
     void initAudio();
@@ -2083,18 +2899,21 @@ export class MainScene extends Phaser.Scene {
       let scoreGain = 0;
       for (const enemy of enemyList) {
         if (!enemy.active) continue;
+        if (enemy instanceof MegaBossEnemy) continue;
         const ex = enemy.x;
         const ey = enemy.y;
         const pts = enemy.scoreValue;
         this.triggerExplosion(ex, ey);
         scoreGain += pts;
         this.awardCreditsForKill(enemy);
+        this.noteEnemyDestroyedForRunStats();
         enemy.destroy();
       }
       this.addScore(scoreGain);
       if (this.redAlertSwarmActive) {
         this.redAlertSwarmActive = false;
         this.waveKillCount = 0;
+        this.onRedAlertSwarmCompleted();
         this.beginPostWaveSequence();
       }
       const projs = [...this.projectiles.getChildren()];
@@ -2142,13 +2961,73 @@ export class MainScene extends Phaser.Scene {
     );
   }
 
+  private fireAutoTurretShot(): void {
+    if (this.gameOver || this.shopOpen || this.autoTurretLevel <= 0) return;
+    const list = [...this.enemies.getChildren()] as BaseEnemy[];
+    const live = list.filter((e) => e.active);
+    if (live.length === 0) return;
+    const enemy = Phaser.Utils.Array.GetRandom(live) as BaseEnemy;
+    const ex = enemy.x;
+    const ey = enemy.y;
+    void initAudio();
+    playAutoTurretFire();
+    this.drawBriefTracer(WIDTH / 2, HEIGHT - 10, ex, ey, 0xff7722, 140, 2);
+    if (enemy instanceof MegaBossEnemy) {
+      const killed = enemy.takeDamage(1);
+      this.noteDirectWeaponHit();
+      if (killed) {
+        this.beginBossDefeatSequence(enemy);
+      } else {
+        this.emitBossHudFrom(enemy);
+      }
+      return;
+    }
+    const points = enemy.scoreValue;
+    const spawnsDebris = enemy.spawnsDebrisOnKill;
+    const wasBallistic = enemy instanceof BallisticEnemy;
+    const ck = this.killCreditKind(enemy);
+    const killed = enemy.takeDamage(1);
+    this.noteDirectWeaponHit();
+    if (killed) {
+      this.onEnemyKilledCore(
+        ex,
+        ey,
+        points,
+        spawnsDebris,
+        wasBallistic,
+        ck,
+        this.batteryType,
+      );
+    }
+  }
+
+  private tickDebrisSweeper(): void {
+    if (this.gameOver || this.shopOpen || this.debrisSweeperLevel <= 0) return;
+    const kids = [...this.debris.getChildren()] as Phaser.GameObjects.GameObject[];
+    const debrisObjs = kids.filter((d) => {
+      const spr = d as Debris;
+      return spr.active;
+    }) as Debris[];
+    if (debrisObjs.length === 0) return;
+    debrisObjs.sort((a, b) => b.y - a.y);
+    const target = debrisObjs[0]!;
+    const dx = target.x;
+    const dy = target.y;
+    void initAudio();
+    playSweeperZap();
+    this.drawBriefTracer(WIDTH / 2, HEIGHT - 8, dx, dy, 0xaa44ff, 90, 2);
+    target.destroy();
+  }
+
   private spawnEnemy(): void {
     if (this.gameOver) return;
     if (this.redAlertSwarmActive) return;
+    if (this.activeMegaBoss) return;
     const { config, enemySpeedScale } = this.getEffectiveWaveConfig();
     const margin = 48;
+    const mode = getWaveSpawnMode(this.currentWave);
 
-    if (config.swarm) {
+    if (mode.mode === "swarm") {
       const n = Phaser.Math.Between(
         config.swarmCountMin ?? 2,
         config.swarmCountMax ?? 3,
@@ -2165,9 +3044,9 @@ export class MainScene extends Phaser.Scene {
     const x = Phaser.Math.Between(margin, WIDTH - margin);
     const y = -48;
     const kind =
-      config.forcedThreat && !config.swarm
-        ? config.forcedThreat
-        : this.pickEnemyType(config.weights);
+      mode.mode === "forced"
+        ? mode.threat
+        : this.pickEnemyType(mode.weights);
     const enemy = this.createEnemyOfType(kind, x, y, enemySpeedScale);
     this.enemies.add(enemy);
     this.markVisibleEnemySpawnPulse();
@@ -2207,12 +3086,8 @@ export class MainScene extends Phaser.Scene {
       return;
     }
 
-    const points = enemy.scoreValue;
     const ex = enemy.x;
     const ey = enemy.y;
-    const wasBallistic = enemy instanceof BallisticEnemy;
-    const spawnsDebris = enemy.spawnsDebrisOnKill;
-    const creditKind = this.killCreditKind(enemy);
 
     const piercing = Boolean(
       projectile.getData(PROJECTILE_DATA_KEY.PIERCING),
@@ -2234,8 +3109,6 @@ export class MainScene extends Phaser.Scene {
         return;
       }
       hitSet.add(enemy);
-    } else {
-      projectile.destroy();
     }
 
     let damage = piercing ? 999 : 1;
@@ -2243,13 +3116,40 @@ export class MainScene extends Phaser.Scene {
       damage = 999;
     }
 
+    if (enemy instanceof MegaBossEnemy) {
+      const killed = enemy.takeDamage(damage);
+      if (bat === "DAVIDS_SLING") {
+        this.applySlingSplashDamage(ex, ey, killed ? null : enemy);
+      }
+      this.noteProjectileEnemyHit(projectile);
+      if (!piercing) {
+        projectile.destroy();
+      }
+      if (killed) {
+        this.beginBossDefeatSequence(enemy);
+      } else {
+        this.emitBossHudFrom(enemy);
+      }
+      return;
+    }
+
+    const points = enemy.scoreValue;
+    const wasBallistic = enemy instanceof BallisticEnemy;
+    const spawnsDebris = enemy.spawnsDebrisOnKill;
+    const creditKind = this.killCreditKind(enemy);
+
     const killed = enemy.takeDamage(damage);
+    this.noteProjectileEnemyHit(projectile);
+    if (!piercing) {
+      projectile.destroy();
+    }
 
     if (bat === "DAVIDS_SLING") {
       this.applySlingSplashDamage(ex, ey, killed ? null : enemy);
     }
 
     if (killed) {
+      const killWeapon = bat ?? this.batteryType;
       this.onEnemyKilledCore(
         ex,
         ey,
@@ -2257,6 +3157,7 @@ export class MainScene extends Phaser.Scene {
         spawnsDebris,
         wasBallistic,
         creditKind,
+        killWeapon,
       );
     }
   }

@@ -26,14 +26,14 @@ export const STRATEGIC_ASSETS: Record<
   }
 > = {
   power_plant: {
-    displayName: "POWER PLANT",
+    displayName: "Power Plant",
     hudDestroyedMessage: "GRID OFFLINE — VISIBILITY REDUCED",
     centerX: Math.round(GAME_WIDTH * 0.22),
     halfWidth: 52,
     anchorY: GAME_HEIGHT - 38,
   },
   military_base: {
-    displayName: "MILITARY BASE",
+    displayName: "Military Base",
     hudDestroyedMessage: "LOGISTICS DAMAGED — RELOAD +1.5s",
     centerX: Math.round(GAME_WIDTH * 0.78),
     halfWidth: 52,

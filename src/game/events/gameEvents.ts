@@ -17,6 +17,9 @@ export const GAME_EVENTS = {
   SHOP_CONTINUE_REQUEST: "SHOP_CONTINUE_REQUEST",
   STRATEGIC_ASSETS_UPDATED: "STRATEGIC_ASSETS_UPDATED",
   GAME_OVER_DEBRIEF: "GAME_OVER_DEBRIEF",
+  BOSS_ENCOUNTER_UPDATED: "BOSS_ENCOUNTER_UPDATED",
+  ACHIEVEMENT_UNLOCKED: "ACHIEVEMENT_UNLOCKED",
+  VOLLEY_CHANGED: "VOLLEY_CHANGED",
 } as const;
 
 type ScoreDetail = { score: number };
@@ -34,6 +37,10 @@ export type AmmoDetail = {
   isReloading: boolean;
   /** 0–1 while `isReloading`; omitted when idle */
   reloadProgress?: number;
+  /** Salvo size for the next click (1–4), mouse wheel. */
+  volleySize?: 1 | 2 | 3 | 4;
+  /** Estimated credits for the next salvo at current weapon + volley. */
+  nextSalvoCredits?: number;
 };
 
 export type JokerChargeDetail = {
@@ -50,6 +57,10 @@ export type ShopPanelDetail = {
   rapidReloadLevel: number;
   extendedMagLevel: number;
   propulsionLevel: number;
+  autoTurretLevel: number;
+  debrisSweeperLevel: number;
+  extendedRangeLevel: number;
+  repairCrewsOwned: boolean;
   hearts: number;
   maxHearts: number;
 };
@@ -69,7 +80,21 @@ export type GameOverDebriefDetail = {
   strategicAssetsIntact: number;
   /** Full waves finished before mission failure. */
   wavesCleared: number;
+  /** Enemies neutralized this sortie (for global aggregate). */
+  totalEnemiesDestroyed: number;
 };
+
+export type BossEncounterDetail =
+  | { active: false }
+  | { active: true; currentHp: number; maxHp: number };
+
+export type AchievementUnlockedDetail = {
+  id: string;
+  displayName: string;
+  rewardCredits: number;
+};
+
+export type VolleyChangedDetail = { size: 1 | 2 | 3 | 4 };
 
 const bus = new EventTarget();
 
@@ -180,6 +205,33 @@ export function emitStrategicAssetsUpdated(
   );
 }
 
+export function emitBossEncounterUpdated(detail: BossEncounterDetail): void {
+  bus.dispatchEvent(
+    new CustomEvent<BossEncounterDetail>(GAME_EVENTS.BOSS_ENCOUNTER_UPDATED, {
+      detail,
+    }),
+  );
+}
+
+export function emitAchievementUnlocked(
+  detail: AchievementUnlockedDetail,
+): void {
+  bus.dispatchEvent(
+    new CustomEvent<AchievementUnlockedDetail>(
+      GAME_EVENTS.ACHIEVEMENT_UNLOCKED,
+      { detail },
+    ),
+  );
+}
+
+export function emitVolleyChanged(size: 1 | 2 | 3 | 4): void {
+  bus.dispatchEvent(
+    new CustomEvent<VolleyChangedDetail>(GAME_EVENTS.VOLLEY_CHANGED, {
+      detail: { size },
+    }),
+  );
+}
+
 export function subscribeGameEvents(handlers: {
   onScoreUpdated?: (score: number) => void;
   onCityHit?: (cityIntegrity: number) => void;
@@ -193,6 +245,9 @@ export function subscribeGameEvents(handlers: {
   onCreditsUpdated?: (credits: number) => void;
   onShopPanelUpdated?: (detail: ShopPanelDetail) => void;
   onStrategicAssetsUpdated?: (detail: StrategicAssetsDetail) => void;
+  onBossEncounterUpdated?: (detail: BossEncounterDetail) => void;
+  onAchievementUnlocked?: (detail: AchievementUnlockedDetail) => void;
+  onVolleyChanged?: (size: 1 | 2 | 3 | 4) => void;
 }): () => void {
   const onScore = (e: Event) => {
     const ce = e as CustomEvent<ScoreDetail>;
@@ -236,6 +291,18 @@ export function subscribeGameEvents(handlers: {
     const ce = e as CustomEvent<StrategicAssetsDetail>;
     handlers.onStrategicAssetsUpdated?.(ce.detail);
   };
+  const onBoss = (e: Event) => {
+    const ce = e as CustomEvent<BossEncounterDetail>;
+    handlers.onBossEncounterUpdated?.(ce.detail);
+  };
+  const onAchievement = (e: Event) => {
+    const ce = e as CustomEvent<AchievementUnlockedDetail>;
+    handlers.onAchievementUnlocked?.(ce.detail);
+  };
+  const onVolley = (e: Event) => {
+    const ce = e as CustomEvent<VolleyChangedDetail>;
+    handlers.onVolleyChanged?.(ce.detail.size);
+  };
   bus.addEventListener(GAME_EVENTS.SCORE_UPDATED, onScore);
   bus.addEventListener(GAME_EVENTS.CITY_HIT, onCity);
   bus.addEventListener(GAME_EVENTS.GAME_OVER, onOver);
@@ -248,6 +315,9 @@ export function subscribeGameEvents(handlers: {
   bus.addEventListener(GAME_EVENTS.CREDITS_UPDATED, onCredits);
   bus.addEventListener(GAME_EVENTS.SHOP_PANEL_UPDATED, onShopPanel);
   bus.addEventListener(GAME_EVENTS.STRATEGIC_ASSETS_UPDATED, onStrategic);
+  bus.addEventListener(GAME_EVENTS.BOSS_ENCOUNTER_UPDATED, onBoss);
+  bus.addEventListener(GAME_EVENTS.ACHIEVEMENT_UNLOCKED, onAchievement);
+  bus.addEventListener(GAME_EVENTS.VOLLEY_CHANGED, onVolley);
   return () => {
     bus.removeEventListener(GAME_EVENTS.SCORE_UPDATED, onScore);
     bus.removeEventListener(GAME_EVENTS.CITY_HIT, onCity);
@@ -261,6 +331,9 @@ export function subscribeGameEvents(handlers: {
     bus.removeEventListener(GAME_EVENTS.CREDITS_UPDATED, onCredits);
     bus.removeEventListener(GAME_EVENTS.SHOP_PANEL_UPDATED, onShopPanel);
     bus.removeEventListener(GAME_EVENTS.STRATEGIC_ASSETS_UPDATED, onStrategic);
+    bus.removeEventListener(GAME_EVENTS.BOSS_ENCOUNTER_UPDATED, onBoss);
+    bus.removeEventListener(GAME_EVENTS.ACHIEVEMENT_UNLOCKED, onAchievement);
+    bus.removeEventListener(GAME_EVENTS.VOLLEY_CHANGED, onVolley);
   };
 }
 

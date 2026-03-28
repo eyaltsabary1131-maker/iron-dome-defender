@@ -1,6 +1,7 @@
 /**
  * Texture keys used by Phaser. Optional PNGs in /public/game/assets/ (see ASSET_MANIFEST).
  * If a file is missing, PreloadScene generates a stylized fallback.
+ * Primary field background: `image_15.png` (photorealistic orbital Eastern Med; moon in frame).
  */
 export const TextureKeys = {
   bgIsrael: "asset_bg_israel",
@@ -20,7 +21,7 @@ export type TextureKey = (typeof TextureKeys)[keyof typeof TextureKeys];
 
 /** Filenames expected under public/game/assets/ */
 export const ASSET_MANIFEST: { key: TextureKey; file: string }[] = [
-  { key: TextureKeys.bgIsrael, file: "bg-israel-map.png" },
+  { key: TextureKeys.bgIsrael, file: "image_15.png" },
   { key: TextureKeys.cityIsrael, file: "city-israel-buildings.png" },
   { key: TextureKeys.ironDomeBattery, file: "iron-dome-battery.png" },
   { key: TextureKeys.missileTamir, file: "missile-tamir.png" },
